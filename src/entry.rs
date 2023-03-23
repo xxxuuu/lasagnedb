@@ -1,5 +1,6 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+
 use crate::OpType;
 
 /// `Entry` 是一次 KV 写入的打包格式
@@ -50,6 +51,12 @@ impl Entry {
         let value = Bytes::copy_from_slice(&data[value_off + 8..value_off + 8 + value_len]);
 
         Entry { meta, key, value }
+    }
+
+    pub fn decode_with_bytes(buf: &mut Bytes) -> Self {
+        let e = Self::decode(&buf[..]);
+        buf.advance(e.size());
+        e
     }
 }
 

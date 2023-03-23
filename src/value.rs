@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 /// | user key | sequence number(7 bytes) | type(1 byte) |
 /// +----------+--------------------------+--------------+
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Key {
     pub user_key: Bytes,
     pub seq_num: u64,
@@ -66,7 +66,8 @@ impl Ord for Key {
         let self_user_key = &self.user_key[..];
         let other_user_key = &other.user_key[..];
 
-        // 优先级：user key -> seq num -> op type，让 seq num 大的排在前面（更小）
+        // 优先级：user key -> seq num -> op type
+        // 相同 key，让 seq num 大的排在前面（更小），相同 seq num，GET最前，DELETE比PUT更前
         match self_user_key.cmp(other_user_key) {
             Ordering::Less => Ordering::Less,
             Ordering::Greater => Ordering::Greater,
@@ -83,9 +84,9 @@ impl Ord for Key {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum OpType {
-    Get = 0,
+    Get = 255,
     Put = 1,
     Delete = 2,
 }
@@ -115,7 +116,7 @@ mod tests {
     fn test_key_order() {
         let k1 = Key::new(Bytes::from("a"), 1, Get);
         let k2 = Key::new(Bytes::from("a"), 1, Delete);
-        assert_eq!(k1.cmp(&k2), Ordering::Greater);
+        assert_eq!(k1.cmp(&k2), Ordering::Less);
 
         let k1 = Key::new(Bytes::from("a"), 1, Get);
         let k2 = Key::new(Bytes::from("a"), 2, Delete);

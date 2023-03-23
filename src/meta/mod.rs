@@ -1,8 +1,5 @@
 pub mod iterator;
-mod journal;
-
-
-pub use journal::*;
+pub mod manifest;
 
 #[cfg(test)]
 mod tests;

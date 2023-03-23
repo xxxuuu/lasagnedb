@@ -1,120 +1,92 @@
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
-use std::ops::Deref;
+use anyhow::anyhow;
 
-use std::{io, result};
+use std::io::{Write};
 
-use bytes::{BufMut, Bytes, BytesMut};
-use thiserror::Error;
+use std::path::{Path};
+use std::sync::Arc;
+
+
+use bytes::{Buf, Bytes};
+
 
 use crate::entry::Entry;
-use crate::wal::{JournalReader, JournalWriter};
+use crate::record::{Record, RecordBuilder, RecordItem};
+use crate::storage::file::FileStorage;
 
-pub type Result<T> = result::Result<T, JournalError>;
-
-#[derive(Error, Debug)]
-pub enum JournalError {
-    #[error("io error: {0}")]
-    IOError(#[from] io::Error),
-}
-
+#[derive(Debug)]
 pub struct Journal {
-    fd: File,
+    file: FileStorage,
+    records: Vec<Arc<Record<JournalItem>>>,
 }
 
 impl Journal {
-    pub fn new(f: File) -> Journal {
-        Journal { fd: f }
+    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let file = FileStorage::open(path)?;
+        let mut records = vec![];
+
+        let mut buf = Bytes::from(file.read_to_end(0)?);
+        while buf.has_remaining() {
+            records.push(Arc::new(Record::decode_with_bytes(&mut buf)?));
+        }
+
+        Ok(Self { file, records })
     }
 
-    fn next(&self) -> JournalWriter<File> {
-        let mut f = self.fd.try_clone().unwrap();
-        f.seek(SeekFrom::End(0)).unwrap();
-        JournalWriter::new(f)
+    pub fn num_of_records(&self) -> usize {
+        self.records.len()
     }
 
-    fn iter(&mut self) -> JournalReader<File> {
-        let mut f = self.fd.try_clone().unwrap();
-        f.seek(SeekFrom::Start(0)).unwrap();
-        JournalReader::new(f)
+    pub fn rename(&self, new_path: impl AsRef<Path>) -> anyhow::Result<()> {
+        self.file.rename(new_path)
     }
 
-    pub fn rotate() {
-        todo!()
+    pub fn delete(&self) -> anyhow::Result<()> {
+        self.file.delete()
     }
 
-    pub fn write(&self, seq_number: u64, batches: Vec<Entry>) -> Result<()> {
-        let mut single_writer = self.next();
-        let journal_item = JournalItem::new(seq_number, batches);
-        single_writer.write(&journal_item[..])?;
-        single_writer.flush()?;
+    pub fn write(&self, batches: Vec<Entry>) -> anyhow::Result<()> {
+        let mut builder = RecordBuilder::new();
+        for i in batches {
+            builder.add(JournalItem(i));
+        }
+        let record = builder.build();
+        self.file.write(&record.encode());
+        self.file.sync();
         Ok(())
     }
-}
 
-/// `JournalItem` is a singe journal written
-/// ```text
-/// +--------------------------+-----------------------+------------+-----+------------+
-/// | sequence number(8 bytes) | entry number(4 bytes) | batch data | ... | batch data |
-/// +--------------------------+-----------------------+------------+-----+------------+
-/// ```
-pub struct JournalItem(Bytes);
-
-impl JournalItem {
-    pub fn new(seq_number: u64, batches: Vec<Entry>) -> Self {
-        let mut data = BytesMut::new();
-        data.put_u64_le(seq_number);
-        data.put_u32_le(batches.len() as u32);
-        for b in &batches {
-            data.put(b.encode());
+    pub fn read_record(&self, record_idx: usize) -> anyhow::Result<Arc<Record<JournalItem>>> {
+        if record_idx >= self.num_of_records() {
+            return Err(anyhow!(
+                "index out of bound, blocks num: {}, record_idx: {}",
+                self.num_of_records(),
+                record_idx
+            ));
         }
-        JournalItem(data.freeze())
-    }
 
-    pub fn with_bytes(data: Bytes) -> Self {
-        JournalItem(data)
-    }
-
-    pub fn parse() -> (u64, u32, Vec<Entry>) {
-        todo!()
+        Ok(self.records[record_idx].clone())
     }
 }
 
-impl Deref for JournalItem {
-    type Target = Bytes;
+#[derive(Debug, Clone)]
+pub struct JournalItem(Entry);
 
-    fn deref(&self) -> &Self::Target {
+impl RecordItem for JournalItem {
+    fn encode(&self) -> Bytes {
+        self.0.encode()
+    }
+
+    fn decode_with_bytes(bytes: &mut Bytes) -> anyhow::Result<Self> {
+        Ok(Self(Entry::decode_with_bytes(bytes)))
+    }
+
+    fn size(&self) -> usize {
+        self.0.size()
+    }
+}
+
+impl AsRef<Entry> for JournalItem {
+    fn as_ref(&self) -> &Entry {
         &self.0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use bytes::Bytes;
-
-    use crate::entry::Entry;
-    use crate::value::OpType;
-    use crate::wal::{Journal, JournalItem};
-
-    fn test_batches() -> Vec<Entry> {
-        vec![
-            Entry::new(OpType::Get.encode(), Bytes::from("k1"), Bytes::from("v1")),
-            Entry::new(OpType::Get.encode(), Bytes::from("k2"), Bytes::from("v2")),
-            Entry::new(OpType::Get.encode(), Bytes::from("k3"), Bytes::from("v3")),
-        ]
-    }
-
-    #[test]
-    fn test_journal() {
-        let file = tempfile::tempfile().unwrap();
-        let mut wal = Journal::new(file.try_clone().unwrap());
-
-        let batches = test_batches();
-
-        wal.write(1, batches).expect("write error");
-
-        let byte = JournalItem::new(1, test_batches()).0;
-        let byte2 = wal.iter().next().unwrap().0;
-        assert_eq!(byte, byte2);
     }
 }

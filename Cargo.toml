@@ -19,6 +19,8 @@ crossbeam = "0.8.2"
 crossbeam-skiplist = "0.1"
 parking_lot = "0.12.1"
 ouroboros = "0.15.6"
+chrono = "0.4.23"
+tracing = "0.1.37"
 
 [dev-dependencies]
 tempfile = "3.3.0"

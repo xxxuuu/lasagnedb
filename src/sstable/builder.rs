@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::block::builder::{Block, BlockBuilder};
 use crate::cache::BlockCache;
@@ -9,11 +10,12 @@ use crate::entry::Entry;
 use crate::sstable::meta::MetaBlock;
 use crate::storage::file::FileStorage;
 
+#[derive(Debug)]
 pub struct SsTable {
     id: usize,
     file: FileStorage,
     metas: Vec<MetaBlock>,
-    meta_offset: usize,
+    meta_offset: u32,
     cache: Option<Arc<BlockCache>>,
 }
 
@@ -23,7 +25,24 @@ impl SsTable {
         _block_cache: Option<Arc<BlockCache>>,
         _file: FileStorage,
     ) -> Result<Self> {
-        unimplemented!()
+        let file = _file;
+        let len = file.size()?;
+        let meta_offset = (&file.read(len - 4, 4)?[..]).get_u32_le();
+
+        let mut metas = vec![];
+        let mut buf = Bytes::from(
+            file.read(meta_offset as u64, len - 4 - meta_offset as u64)?);
+        while buf.has_remaining() {
+            metas.push(MetaBlock::decode_with_bytes(&mut buf));
+        }
+
+        Ok(Self {
+            id: _id,
+            file,
+            metas,
+            meta_offset,
+            cache: _block_cache,
+        })
     }
 
     pub fn num_of_blocks(&self) -> usize {
@@ -35,10 +54,10 @@ impl SsTable {
         let offset_end = self
             .metas
             .get(block_idx + 1)
-            .map_or(self.meta_offset, |x| x.offset as usize);
+            .map_or(self.meta_offset, |x| x.offset);
         let block_data = self
             .file
-            .read(offset as u64, (offset_end - offset as usize) as u64)?;
+            .read(offset as u64, (offset_end - offset) as u64)?;
         Ok(Arc::new(Block::decode(&block_data[..])))
     }
 
@@ -98,7 +117,7 @@ impl SsTableBuilder {
         let old_builder = std::mem::replace(&mut self.builder, BlockBuilder::new());
         let encoded_block = old_builder.build().encode();
         self.meta.push(MetaBlock {
-            offset: self.data.len() as u16,
+            offset: self.data.len() as u32,
             first_key: std::mem::take(&mut self.first_key).into(),
         });
         self.data.extend(encoded_block);
@@ -112,10 +131,11 @@ impl SsTableBuilder {
     ) -> Result<SsTable> {
         self.finish_block();
 
-        let meta_offset = self.data.len();
+        let meta_offset = self.data.len() as u32;
         self.meta
             .iter()
             .for_each(|meta_block| self.data.extend(&meta_block.encode()));
+        self.data.put_u32_le(meta_offset);
         let file = FileStorage::create(path, self.data.clone())?;
         Ok(SsTable {
             id,

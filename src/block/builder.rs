@@ -73,7 +73,7 @@ impl BlockBuilder {
     }
 
     pub fn add(&mut self, e: &Entry) -> bool {
-        if self.size() + e.size() > BLOCK_SIZE {
+        if self.size() + e.size() > BLOCK_SIZE && !self.is_empty() {
             return false;
         }
 
@@ -92,11 +92,15 @@ impl BlockBuilder {
         let entry_num = self.data.len() as u16;
 
         Block {
-            data: b.freeze().to_vec(),
+            data: b.to_vec(),
             offsets: self.offsets,
             checksum,
             entry_num,
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.offsets.is_empty()
     }
 
     fn size(&self) -> usize {

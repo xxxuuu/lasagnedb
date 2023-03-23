@@ -11,6 +11,20 @@ fn test_memtable_rw() {
     let v1 = Bytes::from("v1");
     t.put(k1.clone(), v1.clone());
     assert_eq!(&(t.get(&k1).unwrap().1)[..], &v1[..]);
+
+    let k2 = Key::new(Bytes::from("k2"), 1, OpType::Put);
+    let v2 = Bytes::from("v2");
+    t.put(k2.clone(), v2.clone());
+    assert_eq!(&(t.get(&k2).unwrap().1)[..], &v2[..]);
+
+    let v2 = Bytes::from("v2_2");
+    t.put(k2.clone(), v2.clone());
+    assert_eq!(&(t.get(&k2).unwrap().1)[..], &v2[..]);
+
+    let k2 = Key::new(Bytes::from("k2"), 2, OpType::Put);
+    let v2 = Bytes::from("v2");
+    t.put(k2.clone(), v2.clone());
+    assert_eq!(&(t.get(&k2).unwrap().1)[..], &v2[..]);
 }
 
 #[test]

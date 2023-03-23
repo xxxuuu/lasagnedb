@@ -5,13 +5,16 @@ use std::sync::Arc;
 use crate::entry::EntryBuilder;
 use bytes::Bytes;
 
+
 use crossbeam_skiplist::SkipMap;
+
 
 use crate::memtable::iterator::MemTableIterator;
 use crate::sstable::builder::SsTableBuilder;
 use crate::Key;
 use crate::OpType;
 
+#[derive(Debug)]
 pub struct MemTable {
     db: Arc<SkipMap<Key, Bytes>>,
     size: AtomicUsize,
@@ -36,6 +39,8 @@ impl MemTable {
             None => None,
             Some(e) => {
                 if e.key().op_type == OpType::Delete {
+                    None
+                } else if e.key().user_key != key.user_key {
                     None
                 } else {
                     Some((e.key().clone(), e.value().clone()))
