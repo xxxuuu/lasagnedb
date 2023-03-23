@@ -2,8 +2,6 @@ use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::cell::RefCell;
 
-
-
 use std::sync::Arc;
 
 /// `Record` 是被写入到 `Manifest` 或 `Journal`/`WAL` 中的一条记录，`Record` 内包含多条 `RecordItem`

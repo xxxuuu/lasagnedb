@@ -1,6 +1,5 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-
 use crate::OpType;
 
 /// `Entry` 是一次 KV 写入的打包格式

@@ -1,14 +1,18 @@
-use std::sync::Arc;
 use crate::meta::iterator::ManifestIterator;
 use crate::meta::manifest::{Manifest, ManifestItem};
 use crate::record::{RecordBuilder, RecordItem};
+use std::sync::Arc;
 
 #[test]
 fn test_manifest() {
     let path = tempfile::tempdir().unwrap();
     let path = path.path();
 
-    let items = vec![ManifestItem::Init(0), ManifestItem::NewSst(0, 1), ManifestItem::RotateWal];
+    let items = vec![
+        ManifestItem::Init(0),
+        ManifestItem::NewSst(0, 1),
+        ManifestItem::RotateWal,
+    ];
     {
         let mut m = Manifest::open(path.join("MANIFEST")).unwrap();
         for _ in 0..2 {
@@ -20,7 +24,7 @@ fn test_manifest() {
         }
     }
 
-    let m = Arc::new( Manifest::open(path.join("MANIFEST")).unwrap());
+    let m = Arc::new(Manifest::open(path.join("MANIFEST")).unwrap());
     let mut manifest_iter = ManifestIterator::create_and_seek_to_first(m).unwrap();
     let mut _items = items.clone();
     _items.extend(items);

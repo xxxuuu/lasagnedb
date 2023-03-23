@@ -1,4 +1,3 @@
-use crate::iterator::StorageIterator;
 use crate::record::RecordIterator;
 use crate::wal::{Journal, JournalItem};
 use std::sync::Arc;

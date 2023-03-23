@@ -41,7 +41,7 @@ fn test_open_iter() {
     };
 
     let file = FileStorage::open(path).unwrap();
-    let sst =  Arc::new(SsTable::open(1,None, file).unwrap());
+    let sst = Arc::new(SsTable::open(1, None, file).unwrap());
     let mut iter = SsTableIterator::create_and_seek_to_first(sst).unwrap();
     entries.iter().for_each(|e| {
         assert_eq!(&e.key[..], iter.key());

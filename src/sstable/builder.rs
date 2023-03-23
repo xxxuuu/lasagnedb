@@ -30,8 +30,7 @@ impl SsTable {
         let meta_offset = (&file.read(len - 4, 4)?[..]).get_u32_le();
 
         let mut metas = vec![];
-        let mut buf = Bytes::from(
-            file.read(meta_offset as u64, len - 4 - meta_offset as u64)?);
+        let mut buf = Bytes::from(file.read(meta_offset as u64, len - 4 - meta_offset as u64)?);
         while buf.has_remaining() {
             metas.push(MetaBlock::decode_with_bytes(&mut buf));
         }

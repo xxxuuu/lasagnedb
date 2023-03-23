@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-
 use crate::record::{Record, RecordItem};
 use crate::storage::file::FileStorage;
 
@@ -147,9 +146,7 @@ impl RecordItem for ManifestItem {
                 let version = bytes.get_i32_le();
                 Ok(ManifestItem::Init(version))
             }
-            4 => {
-                Ok(ManifestItem::RotateWal)
-            }
+            4 => Ok(ManifestItem::RotateWal),
             _ => Err(anyhow!("unsupported record item type: {}", item_type)),
         }
     }

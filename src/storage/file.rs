@@ -1,11 +1,11 @@
 use std::fs;
-use std::fs::{File};
+use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use parking_lot::{Mutex};
+use parking_lot::Mutex;
 use thiserror::Error;
 
 use crate::storage::storage::Storage;
@@ -28,7 +28,7 @@ impl FileStorage {
             .open(&path)?;
         Ok(Self {
             file: Mutex::new(file),
-            path: PathBuf::from(path.as_ref())
+            path: PathBuf::from(path.as_ref()),
         })
     }
 
@@ -42,7 +42,7 @@ impl FileStorage {
         file.write_all(&data).unwrap();
         Ok(Self {
             file: Mutex::new(file),
-            path: PathBuf::from(path.as_ref())
+            path: PathBuf::from(path.as_ref()),
         })
     }
 

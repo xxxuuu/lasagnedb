@@ -1,25 +1,22 @@
-use std::{fs, thread};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc};
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+use std::{fs, thread};
 
 use anyhow::Context;
 use bytes::Bytes;
 
-
 use crossbeam::channel;
-
 
 use parking_lot::RwLock;
 
-
-use crate::{Key, OpType};
 use crate::cache::BlockCache;
+use crate::{Key, OpType};
 
 use crate::daemon::DbDaemon;
 use crate::entry::Entry;
@@ -28,13 +25,13 @@ use crate::iterator::StorageIterator;
 use crate::memtable::MemTable;
 use crate::meta::iterator::ManifestIterator;
 use crate::meta::manifest::{Manifest, ManifestItem};
-use crate::OpType::{Delete, Get, Put};
 use crate::record::RecordBuilder;
-use crate::sstable::builder::{SsTable};
+use crate::sstable::builder::SsTable;
 use crate::sstable::iterator::SsTableIterator;
 use crate::storage::file::FileStorage;
-use crate::wal::{Journal};
 use crate::wal::iterator::JournalIterator;
+use crate::wal::Journal;
+use crate::OpType::{Delete, Get, Put};
 
 pub const KB: usize = 1024;
 pub const MB: usize = 1024 * KB;
@@ -121,8 +118,16 @@ impl Db {
     }
 
     pub fn recover(
-        path: impl AsRef<Path>, manifest: Arc<Manifest>, cache: Arc<BlockCache>
-    ) -> anyhow::Result<(Vec<Vec<Arc<SsTable>>>, Vec<Arc<SsTable>>, usize, Arc<MemTable>, Arc<Journal>)> {
+        path: impl AsRef<Path>,
+        manifest: Arc<Manifest>,
+        cache: Arc<BlockCache>,
+    ) -> anyhow::Result<(
+        Vec<Vec<Arc<SsTable>>>,
+        Vec<Arc<SsTable>>,
+        usize,
+        Arc<MemTable>,
+        Arc<Journal>,
+    )> {
         // 从 MANIFEST 恢复元信息
         let mut iter = ManifestIterator::create_and_seek_to_first(manifest)?;
         let mut now_sst_id = 0;
@@ -133,7 +138,11 @@ impl Db {
             match record_item {
                 ManifestItem::NewSst(level, sst_id) => {
                     sst_map.entry(level).or_default().push(sst_id);
-                    now_sst_id = if now_sst_id > sst_id { now_sst_id } else { sst_id }
+                    now_sst_id = if now_sst_id > sst_id {
+                        now_sst_id
+                    } else {
+                        sst_id
+                    }
                 }
                 ManifestItem::DelSst(level, sst_id) => {
                     if let Some(vec) = sst_map.get_mut(&level) {
@@ -165,13 +174,11 @@ impl Db {
             };
             if let Some(sst_ids) = sst_map.get(&level) {
                 for sst_id in sst_ids {
-                    let sst = Arc::new(
-                        SsTable::open(
-                            *sst_id,
-                            Some(cache.clone()),
-                            FileStorage::open(Db::path_of_sst(&path, *sst_id))?,
-                        )?,
-                    );
+                    let sst = Arc::new(SsTable::open(
+                        *sst_id,
+                        Some(cache.clone()),
+                        FileStorage::open(Db::path_of_sst(&path, *sst_id))?,
+                    )?);
                     l.push(sst);
                 }
             }
@@ -219,12 +226,13 @@ impl Db {
             if manifest.num_of_records() > 0 {
                 let recover_res = Db::recover(&path, manifest, cache.clone());
                 let (_levels, _l0_sst, _sst_id, _memtable, _wal) = recover_res?;
-                (levels, l0_sst, sst_id, memtable, wal) = (_levels, _l0_sst, _sst_id, _memtable, Some(_wal));
+                (levels, l0_sst, sst_id, memtable, wal) =
+                    (_levels, _l0_sst, _sst_id, _memtable, Some(_wal));
             }
         }
 
         // 新建 MANIFEST 和 CURRENT，TODO 删除其它多余 MANIFEST
-        let manifest_path = Db::path_of_manifest(&path, version+1);
+        let manifest_path = Db::path_of_manifest(&path, version + 1);
         let mut manifest = Manifest::open(manifest_path.as_path())?;
         let mut r = RecordBuilder::new();
         r.add(ManifestItem::Init(version as i32 + 1));
@@ -242,7 +250,7 @@ impl Db {
         let inner = Arc::new(RwLock::new(Arc::new(DbInner {
             wal: Arc::new(Journal::open(Db::path_of_wal(&path))?),
             frozen_wal: vec![],
-            memtable: memtable,
+            memtable,
             frozen_memtable: vec![],
 
             l0_sst,
@@ -354,7 +362,7 @@ impl Db {
 
     #[cfg(test)]
     fn print_debug_info(&self) {
-        use chrono::Local;;
+        use chrono::Local;
 
         let _inner = self.inner.read();
 
@@ -400,8 +408,8 @@ mod tests {
 
     use bytes::{Bytes, BytesMut};
 
-    use crate::{MEMTABLE_SIZE_LIMIT};
     use crate::db::Db;
+    use crate::MEMTABLE_SIZE_LIMIT;
 
     #[test]
     fn test_write_read() {

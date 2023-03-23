@@ -1,5 +1,5 @@
 use crate::meta::manifest::{Manifest, ManifestItem};
-use crate::record::{RecordIterator};
+use crate::record::RecordIterator;
 use std::sync::Arc;
 
 pub struct ManifestIterator {

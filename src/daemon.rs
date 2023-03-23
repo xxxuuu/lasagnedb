@@ -4,11 +4,11 @@ use crate::memtable::MemTable;
 use crate::meta::manifest::{Manifest, ManifestItem};
 use crate::record::RecordBuilder;
 use crate::sstable::builder::SsTableBuilder;
+use crate::wal::Journal;
 use crate::{Db, MEMTABLE_SIZE_LIMIT};
 use parking_lot::RwLock;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use crate::wal::Journal;
 
 #[derive(Debug)]
 pub(crate) struct DbDaemon {
@@ -52,13 +52,10 @@ impl DbDaemon {
         {
             let mut guard = self.inner.write();
             let mut snapshot = guard.as_ref().clone();
-            let old_memtable = std::mem::replace(
-                &mut snapshot.memtable,
-                Arc::new(MemTable::new())
-            );
+            let old_memtable = std::mem::replace(&mut snapshot.memtable, Arc::new(MemTable::new()));
             let old_wal = std::mem::replace(
                 &mut snapshot.wal,
-                Arc::new(Journal::open(Db::path_of_new_wal(self.path.as_ref()))?)
+                Arc::new(Journal::open(Db::path_of_new_wal(self.path.as_ref()))?),
             );
 
             flush_memtable = old_memtable.clone();

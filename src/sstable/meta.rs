@@ -26,6 +26,9 @@ impl MetaBlock {
         let offset = buf.get_u32_le() as usize;
         let first_key_len = buf.get_u64_le() as usize;
         let first_key = buf.copy_to_bytes(first_key_len);
-        MetaBlock { offset: offset as u32, first_key }
+        MetaBlock {
+            offset: offset as u32,
+            first_key,
+        }
     }
 }

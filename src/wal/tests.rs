@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use bytes::Bytes;
 use crate::entry::Entry;
 use crate::value::OpType;
-use crate::wal::{Journal};
 use crate::wal::iterator::JournalIterator;
+use crate::wal::Journal;
+use bytes::Bytes;
+use std::sync::Arc;
 
 fn test_batches() -> Vec<Entry> {
     vec![
