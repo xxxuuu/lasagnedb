@@ -18,7 +18,7 @@ fn test_manifest() {
         for _ in 0..2 {
             let mut rbuilder: RecordBuilder<ManifestItem> = RecordBuilder::new();
             for item in &items {
-                rbuilder.add(item.clone())
+                rbuilder.add(*item)
             }
             m.add(&rbuilder.build());
         }

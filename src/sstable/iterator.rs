@@ -1,7 +1,11 @@
 use crate::block::iterator::BlockIterator;
+
 use crate::iterator::StorageIterator;
 use crate::sstable::builder::SsTable;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use bytes::Buf;
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub struct SsTableIterator {
@@ -67,6 +71,11 @@ impl SsTableIterator {
         self.block_idx = block_idx;
         Ok(())
     }
+
+    /// Get the current `Entry` meta.
+    fn meta(&self) -> u32 {
+        self.block_iter.meta()
+    }
 }
 
 impl StorageIterator for SsTableIterator {
@@ -92,5 +101,83 @@ impl StorageIterator for SsTableIterator {
             }
         }
         Ok(())
+    }
+}
+
+pub struct VSsTableIterator {
+    iter: SsTableIterator,
+    vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
+    value: Vec<u8>,
+}
+
+impl VSsTableIterator {
+    fn update_kv(&mut self) -> Result<()> {
+        let entry = self.iter.block_iter.entry();
+        if entry.value_separate() {
+            let vsst_id = (&entry.value[..]).get_u32_le();
+            let vsst = match self.vssts.read().get(&vsst_id) {
+                None => return Err(anyhow!("{} do not exist", vsst_id)),
+                Some(_vsst) => _vsst.clone(),
+            };
+            let mut _iter = SsTableIterator::create_and_seek_to_key(vsst, &entry.key[..])?;
+            self.value = Vec::from(_iter.value());
+        } else {
+            self.value = Vec::from(&entry.value[..]);
+        }
+        Ok(())
+    }
+
+    /// Create a new iterator and seek to the first key-value pair.
+    pub fn create_and_seek_to_first(
+        table: Arc<SsTable>,
+        vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
+    ) -> Result<Self> {
+        let mut _self = Self {
+            iter: SsTableIterator::create_and_seek_to_first(table)?,
+            vssts,
+            value: vec![],
+        };
+        _self.update_kv()?;
+        Ok(_self)
+    }
+
+    /// Create a new iterator and seek to the first key-value pair which >= `key`.
+    pub fn create_and_seek_to_key(
+        table: Arc<SsTable>,
+        key: &[u8],
+        vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
+    ) -> Result<Self> {
+        let mut _self = Self {
+            iter: SsTableIterator::create_and_seek_to_key(table, key)?,
+            vssts,
+            value: vec![],
+        };
+        _self.update_kv()?;
+        Ok(_self)
+    }
+
+    /// Seek to the first key-value pair which >= `key`.
+    pub fn seek_to_key(&mut self, key: &[u8]) -> Result<()> {
+        self.iter.seek_to_key(key)?;
+        self.update_kv()
+    }
+}
+
+impl StorageIterator for VSsTableIterator {
+    fn key(&self) -> &[u8] {
+        self.iter.key()
+    }
+
+    fn value(&self) -> &[u8] {
+        &self.value
+    }
+
+    fn is_valid(&self) -> bool {
+        self.iter.is_valid()
+    }
+
+    fn next(&mut self) -> Result<()> {
+        self.iter.next()?;
+        self.update_kv()
     }
 }

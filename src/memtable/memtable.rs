@@ -2,13 +2,12 @@ use std::ops::Bound;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::entry::EntryBuilder;
 use bytes::Bytes;
 
 use crossbeam_skiplist::SkipMap;
 
 use crate::memtable::iterator::MemTableIterator;
-use crate::sstable::builder::SsTableBuilder;
+
 use crate::Key;
 use crate::OpType;
 
@@ -52,19 +51,10 @@ impl MemTable {
         MemTableIterator::new(iter)
     }
 
-    pub fn flush(&self, builder: &mut SsTableBuilder) -> anyhow::Result<()> {
+    pub fn for_each<F: FnMut(&Key, &Bytes)>(&self, mut f: F) {
         for e in self.db.iter() {
-            let key = e.key().clone();
-            let user_key = key.user_key.clone();
-            let value = e.value().clone();
-            let entry = EntryBuilder::new()
-                .op_type(key.op_type)
-                .key_value(user_key, value)
-                .build();
-
-            builder.add(&entry);
+            f(e.key(), e.value())
         }
-        Ok(())
     }
 
     pub fn clear(&mut self) {

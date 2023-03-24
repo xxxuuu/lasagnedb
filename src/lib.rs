@@ -15,5 +15,8 @@ mod transaction;
 mod value;
 mod wal;
 
+#[cfg(test)]
+mod db_tests;
+
 pub use db::*;
 pub use value::*;

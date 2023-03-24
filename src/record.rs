@@ -35,7 +35,7 @@ impl<T: RecordItem + Clone> Record<T> {
     }
 
     pub fn decode_with_bytes(buf: &mut Bytes) -> anyhow::Result<Self> {
-        let _buf = buf.clone();
+        let mut _buf = buf.clone();
         let expect_checksum = buf.get_u32_le();
         let item_num = buf.get_u64_le();
 
@@ -47,7 +47,8 @@ impl<T: RecordItem + Clone> Record<T> {
             data_len += item.size();
         }
 
-        let checksum = crc::crc32::checksum_ieee(&_buf[4..4 + 8 + data_len]);
+        _buf.advance(4);
+        let checksum = crc::crc32::checksum_ieee(&_buf[..8 + data_len]);
         if expect_checksum != checksum {
             return Err(anyhow!(
                 "verify checksum failed when decode record, expect: {}, but got: {}",

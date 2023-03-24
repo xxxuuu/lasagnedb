@@ -1,6 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
+
 use std::io::{Read, Write};
+
 use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,7 @@ use crate::cache::BlockCache;
 use crate::{Key, OpType};
 
 use crate::daemon::DbDaemon;
-use crate::entry::Entry;
+use crate::entry::EntryBuilder;
 use crate::iterator::merge_iterator::MergeIterator;
 use crate::iterator::StorageIterator;
 use crate::memtable::MemTable;
@@ -27,7 +29,7 @@ use crate::meta::iterator::ManifestIterator;
 use crate::meta::manifest::{Manifest, ManifestItem};
 use crate::record::RecordBuilder;
 use crate::sstable::builder::SsTable;
-use crate::sstable::iterator::SsTableIterator;
+use crate::sstable::iterator::VSsTableIterator;
 use crate::storage::file::FileStorage;
 use crate::wal::iterator::JournalIterator;
 use crate::wal::Journal;
@@ -39,7 +41,8 @@ pub const GB: usize = 1024 * MB;
 
 pub const MEMTABLE_SIZE_LIMIT: usize = 4 * MB;
 pub const BLOCK_CACHE_SIZE: u64 = 4 * GB as u64;
-pub const SST_LIMIT: usize = 6;
+pub const MIN_VSST_SIZE: u64 = 4 * KB as u64;
+pub const SST_LEVEL_LIMIT: u32 = 6;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DbInner {
@@ -48,20 +51,22 @@ pub(crate) struct DbInner {
     pub(crate) memtable: Arc<MemTable>,
     pub(crate) frozen_memtable: Vec<Arc<MemTable>>,
 
-    pub(crate) l0_sst: Vec<Arc<SsTable>>,
     pub(crate) levels: Vec<Vec<Arc<SsTable>>>,
+    pub(crate) vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
 
     pub(crate) seq_num: u64,
-    pub(crate) sst_id: usize,
+    pub(crate) sst_id: u32,
+    pub(crate) vsst_id: u32,
 }
 
 #[derive(Debug)]
 pub struct Db {
-    inner: Arc<RwLock<Arc<DbInner>>>,
+    pub(crate) inner: Arc<RwLock<Arc<DbInner>>>,
 
     path: Arc<PathBuf>,
     version: AtomicU64,
-    block_cache: Arc<BlockCache>,
+    sst_cache: Arc<BlockCache>,
+    vsst_cache: Arc<BlockCache>,
 
     flush_chan: (channel::Sender<()>, channel::Receiver<()>),
     compaction_chan: (channel::Sender<()>, channel::Receiver<()>),
@@ -86,8 +91,8 @@ impl Db {
         let _daemon = self.daemon.clone();
         thread::spawn(move || {
             for _ in _flush_rx {
-                if let Err(_) = _daemon.rotate() {
-                    // TODO
+                if let Err(err) = _daemon.rotate() {
+                    eprintln!("rotate failed: {}", err)
                 }
             }
         });
@@ -109,29 +114,33 @@ impl Db {
         base_path.as_ref().join("LOG")
     }
 
-    pub(crate) fn path_of_sst(base_path: impl AsRef<Path>, sst_id: usize) -> PathBuf {
+    pub(crate) fn path_of_sst(base_path: impl AsRef<Path>, sst_id: u32) -> PathBuf {
         base_path.as_ref().join(format!("{:05}.SST", sst_id))
     }
 
-    pub(crate) fn path_of_vsst(base_path: impl AsRef<Path>, vsst_id: usize) -> PathBuf {
+    pub(crate) fn path_of_vsst(base_path: impl AsRef<Path>, vsst_id: u32) -> PathBuf {
         base_path.as_ref().join(format!("{:05}.VSST", vsst_id))
     }
 
     pub fn recover(
         path: impl AsRef<Path>,
         manifest: Arc<Manifest>,
-        cache: Arc<BlockCache>,
+        sst_cache: Arc<BlockCache>,
+        vsst_cache: Arc<BlockCache>,
     ) -> anyhow::Result<(
         Vec<Vec<Arc<SsTable>>>,
-        Vec<Arc<SsTable>>,
-        usize,
+        u32,
+        HashMap<u32, Arc<SsTable>>,
+        u32,
         Arc<MemTable>,
         Arc<Journal>,
     )> {
         // 从 MANIFEST 恢复元信息
         let mut iter = ManifestIterator::create_and_seek_to_first(manifest)?;
         let mut now_sst_id = 0;
-        let mut sst_map: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        let mut now_vsst_id = 0;
+        let mut sst_map: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut vsst_set: HashSet<u32> = HashSet::new();
         let mut seq_num = 1;
         while iter.is_valid() {
             let record_item = iter.record_item();
@@ -149,6 +158,17 @@ impl Db {
                         vec.retain(|id| *id != sst_id);
                     }
                 }
+                ManifestItem::NewVSst(sst_id) => {
+                    vsst_set.insert(sst_id);
+                    now_vsst_id = if now_vsst_id > sst_id {
+                        now_vsst_id
+                    } else {
+                        sst_id
+                    }
+                }
+                ManifestItem::DelVSst(sst_id) => {
+                    vsst_set.remove(&sst_id);
+                }
                 ManifestItem::MaxSeqNum(_seq_num) => seq_num = _seq_num,
                 ManifestItem::Init(_) => {}
                 ManifestItem::RotateWal => {
@@ -163,25 +183,31 @@ impl Db {
             iter.next()?;
         }
         // 恢复 SST
-        let mut l0_sst: Vec<Arc<SsTable>> = vec![];
         let mut levels: Vec<Vec<Arc<SsTable>>> = vec![];
-        levels.resize(SST_LIMIT, vec![]);
-        for level in 0..SST_LIMIT {
-            let l: &mut Vec<Arc<SsTable>> = if level == 0 {
-                &mut l0_sst
-            } else {
-                &mut levels[level]
-            };
+        levels.resize(SST_LEVEL_LIMIT as usize, vec![]);
+        for level in 0..SST_LEVEL_LIMIT {
+            let l: &mut Vec<Arc<SsTable>> = &mut levels[level as usize];
             if let Some(sst_ids) = sst_map.get(&level) {
                 for sst_id in sst_ids {
                     let sst = Arc::new(SsTable::open(
                         *sst_id,
-                        Some(cache.clone()),
+                        Some(sst_cache.clone()),
                         FileStorage::open(Db::path_of_sst(&path, *sst_id))?,
                     )?);
                     l.push(sst);
                 }
             }
+        }
+        let mut vssts: HashMap<u32, Arc<SsTable>> = HashMap::new();
+        for vsst_id in vsst_set {
+            vssts.insert(
+                vsst_id,
+                Arc::new(SsTable::open(
+                    vsst_id,
+                    Some(vsst_cache.clone()),
+                    FileStorage::open(Db::path_of_vsst(&path, vsst_id))?,
+                )?),
+            );
         }
 
         // 重新执行 LOG 操作
@@ -192,14 +218,14 @@ impl Db {
             while wal_iter.is_valid() {
                 let wal_item = wal_iter.record_item();
                 let entry = wal_item.as_ref();
-                let op_code = OpType::from(entry.meta);
+                let op_code = OpType::from((entry.meta & 0xFF) as u8);
                 let key = Db::make_internal_key(1, op_code, &entry.key);
                 memtable.put(key, entry.value.clone());
                 wal_iter.next()?;
             }
         }
 
-        Ok((levels, l0_sst, now_sst_id, memtable, wal))
+        Ok((levels, now_sst_id, vssts, now_vsst_id, memtable, wal))
     }
 
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
@@ -207,11 +233,15 @@ impl Db {
         let version = 0;
 
         let mut levels: Vec<Vec<Arc<SsTable>>> = vec![];
-        let mut l0_sst: Vec<Arc<SsTable>> = vec![];
+        levels.resize(SST_LEVEL_LIMIT as usize, vec![]);
+        let mut vssts: HashMap<u32, Arc<SsTable>> = HashMap::new();
         let mut memtable = Arc::new(MemTable::new());
         let mut wal = None;
         let mut sst_id = 0;
-        let cache = Arc::new(BlockCache::new(BLOCK_CACHE_SIZE));
+        let mut vsst_id = 0;
+        let sst_cache = Arc::new(BlockCache::new(BLOCK_CACHE_SIZE));
+        let vsst_cache = Arc::new(BlockCache::new(BLOCK_CACHE_SIZE));
+
         if current_path.exists() {
             // 从 CURRENT 中获取当前的 MANIFEST 文件
             let current_manifest: anyhow::Result<String> = {
@@ -224,10 +254,11 @@ impl Db {
             )?);
             // 根据 MANIFEST 恢复数据
             if manifest.num_of_records() > 0 {
-                let recover_res = Db::recover(&path, manifest, cache.clone());
-                let (_levels, _l0_sst, _sst_id, _memtable, _wal) = recover_res?;
-                (levels, l0_sst, sst_id, memtable, wal) =
-                    (_levels, _l0_sst, _sst_id, _memtable, Some(_wal));
+                let recover_res =
+                    Db::recover(&path, manifest, sst_cache.clone(), vsst_cache.clone());
+                let (_levels, _sst_id, _vssts, _vsst_id, _memtable, _wal) = recover_res?;
+                (levels, sst_id, vssts, vsst_id, memtable, wal) =
+                    (_levels, _sst_id, _vssts, _vsst_id, _memtable, Some(_wal));
             }
         }
 
@@ -236,6 +267,14 @@ impl Db {
         let mut manifest = Manifest::open(manifest_path.as_path())?;
         let mut r = RecordBuilder::new();
         r.add(ManifestItem::Init(version as i32 + 1));
+        for (_level, _ssts) in levels.iter().enumerate() {
+            for sst in _ssts {
+                r.add(ManifestItem::NewSst(_level as u32, sst.id()));
+            }
+        }
+        for (_vsst_id, _) in &vssts {
+            r.add(ManifestItem::NewVSst(*_vsst_id));
+        }
         manifest.add(&r.build());
         let manifest = Arc::new(RwLock::new(manifest));
         let mut current = OpenOptions::new()
@@ -252,12 +291,11 @@ impl Db {
             frozen_wal: vec![],
             memtable,
             frozen_memtable: vec![],
-
-            l0_sst,
             levels,
-
+            vssts: Arc::new(RwLock::new(vssts)),
             seq_num: 1,
             sst_id,
+            vsst_id,
         })));
 
         let path = Arc::new(PathBuf::from(path.as_ref()));
@@ -265,12 +303,19 @@ impl Db {
             inner: inner.clone(),
             path: path.clone(),
             version: AtomicU64::new(version as u64),
-            block_cache: cache.clone(),
+            sst_cache: sst_cache.clone(),
+            vsst_cache: vsst_cache.clone(),
 
             flush_chan: channel::unbounded(),
             compaction_chan: channel::unbounded(),
             exit_chan: channel::bounded(1),
-            daemon: Arc::new(DbDaemon::new(inner, cache, manifest.clone(), path)),
+            daemon: Arc::new(DbDaemon::new(
+                inner,
+                sst_cache,
+                vsst_cache,
+                manifest.clone(),
+                path,
+            )),
             manifest,
         })
     }
@@ -317,13 +362,15 @@ impl Db {
 
         // sst
         let mut iters = Vec::new();
-        iters.reserve(snapshot.l0_sst.len());
-        for table in snapshot.l0_sst.iter().rev() {
-            iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
+        iters.reserve(snapshot.levels[0].len());
+        for table in snapshot.levels[0].iter().rev() {
+            iters.push(Box::new(VSsTableIterator::create_and_seek_to_key(
                 table.clone(),
                 key,
+                snapshot.vssts.clone(),
             )?));
         }
+        // TODO
         let iter = MergeIterator::create(iters);
         if iter.is_valid() {
             return Ok(Some(Bytes::copy_from_slice(iter.value())));
@@ -341,7 +388,11 @@ impl Db {
             None => (Bytes::new(), Delete),
             Some(v) => (v, Put),
         };
-        let entry = Entry::new(op_type.encode(), key.clone(), value.clone());
+        let mut entry_builder = EntryBuilder::new();
+        entry_builder
+            .op_type(op_type)
+            .key_value(key.clone(), value.clone());
+        let entry = entry_builder.build();
 
         let guard = self.inner.read();
 
@@ -358,23 +409,6 @@ impl Db {
         }
 
         Ok(())
-    }
-
-    #[cfg(test)]
-    fn print_debug_info(&self) {
-        use chrono::Local;
-
-        let _inner = self.inner.read();
-
-        println!("{}", Local::now().format("%Y-%m-%d %H:%M:%S"));
-        println!("memtable: {}KiB", _inner.memtable.size() / 1024);
-        dbg!(&_inner.memtable);
-
-        println!("forzen memtable number: {}", _inner.frozen_memtable.len());
-        dbg!(&_inner.frozen_memtable);
-
-        println!("l0 sst number: {}", _inner.l0_sst.len());
-        println!()
     }
 }
 
@@ -397,87 +431,5 @@ impl StorageIterator for DbIterator {
 
     fn next(&mut self) -> anyhow::Result<()> {
         todo!()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Read;
-    use std::thread;
-    use std::time::Duration;
-
-    use bytes::{Bytes, BytesMut};
-
-    use crate::db::Db;
-    use crate::MEMTABLE_SIZE_LIMIT;
-
-    #[test]
-    fn test_write_read() {
-        let data_dir = tempfile::tempdir().unwrap();
-        println!("tempdir: {}", data_dir.path().to_str().unwrap());
-
-        let mut db = Db::open_file(data_dir.path()).unwrap();
-
-        let k1 = Bytes::from("k1");
-        let v1 = Bytes::from("v1");
-        let v1_1 = Bytes::from("v1_1");
-        db.put(k1.clone(), v1).unwrap();
-        db.put(k1.clone(), v1_1.clone()).unwrap();
-        assert_eq!(db.get(&k1).unwrap().unwrap(), &v1_1);
-
-        let k2 = Bytes::from("k2");
-        let v2 = Bytes::from("v2");
-        db.put(k2.clone(), v2.clone()).unwrap();
-        assert_eq!(db.get(&k2).unwrap().unwrap(), &v2);
-
-        let k3 = Bytes::from("k3");
-        let v3 = Bytes::from("v3");
-        db.put(k3.clone(), v3).unwrap();
-        db.delete(k3.clone()).unwrap();
-        assert_eq!(db.get(&k3).unwrap(), None);
-    }
-
-    #[test]
-    fn test_recover() {
-        let data_dir = tempfile::tempdir().unwrap();
-        println!("tempdir: {}", data_dir.path().to_str().unwrap());
-
-        let k1 = Bytes::from("k1");
-        let v1 = Bytes::from("v1");
-        let _k1 = Bytes::from("tmp_k1");
-        let _v1 = BytesMut::zeroed(MEMTABLE_SIZE_LIMIT / 40).freeze();
-
-        {
-            let mut db = Db::open_file(data_dir.path()).unwrap();
-            for _ in 1..50 {
-                db.put(_k1.clone(), _v1.clone()).unwrap();
-            }
-            db.put(k1.clone(), v1.clone()).unwrap();
-        }
-        thread::sleep(Duration::from_secs(2));
-        {
-            let db = Db::open_file(data_dir.path()).unwrap();
-            assert_eq!(db.get(&k1).unwrap(), Some(v1.clone()));
-            assert_eq!(db.get(&_k1).unwrap(), Some(_v1.clone()));
-        }
-    }
-
-    #[test]
-    fn test_rotate() {
-        let data_dir = tempfile::tempdir().unwrap();
-        println!("tempdir: {}", data_dir.path().to_str().unwrap());
-
-        let mut db = Db::open_file(data_dir.path()).unwrap();
-
-        for _ in 1..50 {
-            let k1 = Bytes::from("k1");
-            let v1 = BytesMut::zeroed(MEMTABLE_SIZE_LIMIT / 40).freeze();
-
-            db.put(k1.clone(), v1.clone()).unwrap();
-        }
-
-        thread::sleep(Duration::from_secs(2));
-        db.print_debug_info();
-        assert_eq!(db.inner.read().l0_sst.len(), 1);
     }
 }

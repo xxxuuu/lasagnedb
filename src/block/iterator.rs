@@ -1,12 +1,13 @@
 pub use crate::block::builder::Block;
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryBuilder};
 use std::sync::Arc;
 
 /// Iterates on a block.
 pub struct BlockIterator {
     block: Arc<Block>,
-    key: Vec<u8>,
-    value: Vec<u8>,
+    meta: u32,
+    entry: Entry,
+    valid: bool,
     idx: usize,
 }
 
@@ -14,8 +15,9 @@ impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
         Self {
             block,
-            key: Vec::new(),
-            value: Vec::new(),
+            meta: 0,
+            entry: EntryBuilder::empty(),
+            valid: false,
             idx: 0,
         }
     }
@@ -34,21 +36,33 @@ impl BlockIterator {
         iter
     }
 
+    /// Return the current entry.
+    pub fn entry(&self) -> &Entry {
+        debug_assert!(self.valid, "invalid iterator");
+        &self.entry
+    }
+
+    /// Returns meta info of the current entry.
+    pub fn meta(&self) -> u32 {
+        debug_assert!(self.valid, "invalid iterator");
+        self.entry.meta
+    }
+
     /// Returns the key of the current entry.
     pub fn key(&self) -> &[u8] {
-        debug_assert!(!self.key.is_empty(), "invalid iterator");
-        &self.key
+        debug_assert!(self.valid, "invalid iterator");
+        &self.entry.key[..]
     }
 
     /// Returns the value of the current entry.
     pub fn value(&self) -> &[u8] {
-        debug_assert!(!self.key.is_empty(), "invalid iterator");
-        &self.value
+        debug_assert!(self.valid, "invalid iterator");
+        &self.entry.value[..]
     }
 
     /// Returns true if the iterator is valid.
     pub fn is_valid(&self) -> bool {
-        !self.key.is_empty()
+        self.valid
     }
 
     /// Seeks to the first key in the block.
@@ -59,8 +73,8 @@ impl BlockIterator {
     /// Seeks to the idx-th key in the block.
     fn seek_to(&mut self, idx: usize) {
         if idx >= self.block.offsets.len() {
-            self.key.clear();
-            self.value.clear();
+            self.entry = EntryBuilder::empty();
+            self.valid = false;
             return;
         }
         let offset = self.block.offsets[idx] as usize;
@@ -76,10 +90,8 @@ impl BlockIterator {
 
     fn seek_to_offset(&mut self, offset: usize) {
         let entry = Entry::decode(&self.block.data[offset..]);
-        self.key.clear();
-        self.key.extend(entry.key);
-        self.value.clear();
-        self.value.extend(entry.value);
+        self.entry = entry;
+        self.valid = true;
     }
 
     /// Seek to the first key that >= `key`.

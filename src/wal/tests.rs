@@ -1,4 +1,4 @@
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryBuilder};
 use crate::value::OpType;
 use crate::wal::iterator::JournalIterator;
 use crate::wal::Journal;
@@ -7,9 +7,18 @@ use std::sync::Arc;
 
 fn test_batches() -> Vec<Entry> {
     vec![
-        Entry::new(OpType::Get.encode(), Bytes::from("k1"), Bytes::from("v1")),
-        Entry::new(OpType::Get.encode(), Bytes::from("k2"), Bytes::from("v2")),
-        Entry::new(OpType::Get.encode(), Bytes::from("k3"), Bytes::from("v3")),
+        EntryBuilder::new()
+            .op_type(OpType::Get)
+            .key_value(Bytes::from("k1"), Bytes::from("v1"))
+            .build(),
+        EntryBuilder::new()
+            .op_type(OpType::Get)
+            .key_value(Bytes::from("k2"), Bytes::from("v2"))
+            .build(),
+        EntryBuilder::new()
+            .op_type(OpType::Get)
+            .key_value(Bytes::from("k3"), Bytes::from("v3"))
+            .build(),
     ]
 }
 
@@ -23,10 +32,10 @@ fn test_journal() {
         wal.write(batch2.clone()).unwrap();
     }
 
-    let wal = Arc::new(Journal::open(file_path.clone()).unwrap());
+    let wal = Arc::new(Journal::open(file_path).unwrap());
     let mut iter = JournalIterator::create_and_seek_to_first(wal).unwrap();
-    let mut batches = batch1.clone();
-    batches.extend(batch2.clone());
+    let mut batches = batch1;
+    batches.extend(batch2);
 
     batches.iter().for_each(|item| {
         assert!(iter.is_valid());

@@ -6,33 +6,41 @@ use crate::OpType;
 ///
 /// layout:
 /// ```text
-/// +--------------+---------------------+-----+-----------------------+-------+
-/// | meta(1 byte) | key length(8 bytes) | key | value length(8 bytes) | value |
-/// +--------------+---------------------+-----+-----------------------+-------+
+/// +---------------+---------------------+-----+-----------------------+-------+
+/// | meta(4 bytes) | key length(8 bytes) | key | value length(8 bytes) | value |
+/// +---------------+---------------------+-----+-----------------------+-------+
 /// ```
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct Entry {
-    pub(crate) meta: u8,
+    pub(crate) meta: u32,
     pub(crate) key: Bytes,
     pub(crate) value: Bytes,
 }
 
 impl Entry {
-    pub fn new(meta: u8, key: Bytes, value: Bytes) -> Self {
+    fn new(meta: u32, key: Bytes, value: Bytes) -> Self {
         Entry { meta, key, value }
     }
 
     pub fn size(&self) -> usize {
-        1 + 8 + 8 + self.key.len() + self.value.len()
+        4 + 8 + 8 + self.key.len() + self.value.len()
     }
 
     pub fn has_value(&self) -> bool {
         !self.value.is_empty()
     }
 
+    pub fn op_type(&self) -> OpType {
+        OpType::from((self.meta & 0xFF) as u8)
+    }
+
+    pub fn value_separate(&self) -> bool {
+        (self.meta >> 8) | 0x1 == 0x1
+    }
+
     pub fn encode(&self) -> Bytes {
         let mut bytes = BytesMut::with_capacity(self.size());
-        bytes.put_u8(self.meta);
+        bytes.put_u32_le(self.meta);
         bytes.put_u64_le(self.key.len() as u64);
         bytes.put(&self.key[..]);
         bytes.put_u64_le(self.value.len() as u64);
@@ -41,11 +49,11 @@ impl Entry {
     }
 
     pub fn decode(data: &[u8]) -> Self {
-        let meta = data[0];
-        let key_len = (&data[1..9]).get_u64_le() as usize;
-        let key = Bytes::copy_from_slice(&data[9..9 + key_len]);
+        let meta = (&data[..]).get_u32_le();
+        let key_len = (&data[4..12]).get_u64_le() as usize;
+        let key = Bytes::copy_from_slice(&data[12..12 + key_len]);
 
-        let value_off = 9 + key_len;
+        let value_off = 12 + key_len;
         let value_len = (&data[value_off..value_off + 8]).get_u64_le() as usize;
         let value = Bytes::copy_from_slice(&data[value_off + 8..value_off + 8 + value_len]);
 
@@ -61,7 +69,7 @@ impl Entry {
 
 #[derive(Default)]
 pub struct EntryBuilder {
-    meta: u8,
+    meta: u32,
     key: Bytes,
     value: Bytes,
 }
@@ -72,7 +80,16 @@ impl EntryBuilder {
     }
 
     pub fn op_type(&mut self, op_type: OpType) -> &mut Self {
-        self.meta = op_type.encode();
+        self.meta |= op_type.encode() as u32;
+        self
+    }
+
+    pub fn kv_separate(&mut self, separate: bool) -> &mut Self {
+        if separate {
+            self.meta |= 1 << 8
+        } else {
+            self.meta &= !(1 << 8);
+        }
         self
     }
 
@@ -84,6 +101,14 @@ impl EntryBuilder {
 
     pub fn build(&self) -> Entry {
         Entry::new(self.meta, self.key.clone(), self.value.clone())
+    }
+
+    pub fn empty() -> Entry {
+        Entry::new(
+            0,
+            BytesMut::zeroed(0).freeze(),
+            BytesMut::zeroed(0).freeze(),
+        )
     }
 }
 
@@ -119,7 +144,7 @@ pub mod tests {
     #[test]
     fn test_entry_builder() {
         let (key, value, entry) = rand_gen_entry();
-        assert_eq!(entry.meta, Get.encode());
+        assert_eq!(entry.op_type(), Get);
         assert_eq!(entry.key, key);
         assert_eq!(entry.value, value);
     }

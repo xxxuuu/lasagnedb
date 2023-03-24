@@ -62,9 +62,13 @@ pub enum ManifestItem {
     /// 初始化（version)
     Init(i32),
     /// 新增 SST 文件 (level, sst_id)
-    NewSst(usize, usize),
+    NewSst(u32, u32),
     /// 删除 SST 文件 (level, sst_id)
-    DelSst(usize, usize),
+    DelSst(u32, u32),
+    /// 新增 vSST 文件 (vsst_id)
+    NewVSst(u32),
+    /// 删除 vSST 文件 (vsst_id)
+    DelVSst(u32),
     /// 更新最大 seq num
     MaxSeqNum(u64),
     /// 新旧 WAL 切换
@@ -78,11 +82,47 @@ impl ManifestItem {
     }
 
     #[inline]
+    pub fn type_encode(&self) -> u8 {
+        match self {
+            ManifestItem::Init(_) => 0,
+            ManifestItem::NewSst(_, _) => 1,
+            ManifestItem::DelSst(_, _) => 2,
+            ManifestItem::NewVSst(_) => 3,
+            ManifestItem::DelVSst(_) => 4,
+            ManifestItem::MaxSeqNum(_) => 5,
+            ManifestItem::RotateWal => 6,
+        }
+    }
+
+    pub fn put_content(&self, buf: &mut BytesMut) {
+        match self {
+            ManifestItem::NewSst(level, sst_id) => {
+                buf.put_u32_le(*level);
+                buf.put_u32_le(*sst_id)
+            }
+            ManifestItem::DelSst(level, sst_id) => {
+                buf.put_u32_le(*level);
+                buf.put_u32_le(*sst_id)
+            }
+            ManifestItem::MaxSeqNum(seq_num) => {
+                buf.put_u64_le(*seq_num);
+            }
+            ManifestItem::Init(version) => {
+                buf.put_i32_le(*version);
+            }
+            ManifestItem::RotateWal => {}
+            ManifestItem::NewVSst(vsst_id) => buf.put_u32_le(*vsst_id),
+            ManifestItem::DelVSst(vsst_id) => buf.put_u32_le(*vsst_id),
+        }
+    }
+
+    #[inline]
     pub fn content_size(&self) -> usize {
-        const HEADER_SIZE: usize = 5;
         match self {
             ManifestItem::NewSst(_, _) => mem::size_of::<u32>() * 2,
             ManifestItem::DelSst(_, _) => mem::size_of::<u32>() * 2,
+            ManifestItem::NewVSst(_) => mem::size_of::<u32>(),
+            ManifestItem::DelVSst(_) => mem::size_of::<u32>(),
             ManifestItem::MaxSeqNum(_) => mem::size_of::<u64>(),
             ManifestItem::Init(_) => mem::size_of::<i32>(),
             ManifestItem::RotateWal => 0,
@@ -93,34 +133,9 @@ impl ManifestItem {
 impl RecordItem for ManifestItem {
     fn encode(&self) -> Bytes {
         let mut buf = BytesMut::new();
-        match self {
-            ManifestItem::NewSst(level, sst_id) => {
-                buf.put_u8(0);
-                buf.put_u32_le(self.content_size() as u32);
-                buf.put_u32_le(*level as u32);
-                buf.put_u32_le(*sst_id as u32)
-            }
-            ManifestItem::DelSst(level, sst_id) => {
-                buf.put_u8(1);
-                buf.put_u32_le(self.content_size() as u32);
-                buf.put_u32_le(*level as u32);
-                buf.put_u32_le(*sst_id as u32)
-            }
-            ManifestItem::MaxSeqNum(seq_num) => {
-                buf.put_u8(2);
-                buf.put_u32_le(self.content_size() as u32);
-                buf.put_u64_le(*seq_num);
-            }
-            ManifestItem::Init(version) => {
-                buf.put_u8(3);
-                buf.put_u32_le(self.content_size() as u32);
-                buf.put_i32_le(*version);
-            }
-            ManifestItem::RotateWal => {
-                buf.put_u8(4);
-                buf.put_u32_le(0);
-            }
-        }
+        buf.put_u8(self.type_encode());
+        buf.put_u32_le(self.content_size() as u32);
+        self.put_content(&mut buf);
         buf.freeze()
     }
 
@@ -129,24 +144,32 @@ impl RecordItem for ManifestItem {
         let _data_len = bytes.get_u32_le();
         match item_type {
             0 => {
-                let level = bytes.get_u32_le();
-                let sst_id = bytes.get_u32_le();
-                Ok(ManifestItem::NewSst(level as usize, sst_id as usize))
+                let version = bytes.get_i32_le();
+                Ok(ManifestItem::Init(version))
             }
             1 => {
                 let level = bytes.get_u32_le();
                 let sst_id = bytes.get_u32_le();
-                Ok(ManifestItem::DelSst(level as usize, sst_id as usize))
+                Ok(ManifestItem::NewSst(level, sst_id))
             }
             2 => {
+                let level = bytes.get_u32_le();
+                let sst_id = bytes.get_u32_le();
+                Ok(ManifestItem::DelSst(level, sst_id))
+            }
+            3 => {
+                let sst_id = bytes.get_u32_le();
+                Ok(ManifestItem::NewVSst(sst_id))
+            }
+            4 => {
+                let sst_id = bytes.get_u32_le();
+                Ok(ManifestItem::DelVSst(sst_id))
+            }
+            5 => {
                 let seq_num = bytes.get_u64_le();
                 Ok(ManifestItem::MaxSeqNum(seq_num))
             }
-            3 => {
-                let version = bytes.get_i32_le();
-                Ok(ManifestItem::Init(version))
-            }
-            4 => Ok(ManifestItem::RotateWal),
+            6 => Ok(ManifestItem::RotateWal),
             _ => Err(anyhow!("unsupported record item type: {}", item_type)),
         }
     }

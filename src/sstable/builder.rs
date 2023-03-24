@@ -12,7 +12,7 @@ use crate::storage::file::FileStorage;
 
 #[derive(Debug)]
 pub struct SsTable {
-    id: usize,
+    id: u32,
     file: FileStorage,
     metas: Vec<MetaBlock>,
     meta_offset: u32,
@@ -21,7 +21,7 @@ pub struct SsTable {
 
 impl SsTable {
     pub fn open(
-        _id: usize,
+        _id: u32,
         _block_cache: Option<Arc<BlockCache>>,
         _file: FileStorage,
     ) -> Result<Self> {
@@ -42,6 +42,10 @@ impl SsTable {
             meta_offset,
             cache: _block_cache,
         })
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
     }
 
     pub fn num_of_blocks(&self) -> usize {
@@ -122,9 +126,13 @@ impl SsTableBuilder {
         self.data.extend(encoded_block);
     }
 
+    pub fn len(&self) -> usize {
+        self.meta.len()
+    }
+
     pub fn build(
         mut self,
-        id: usize,
+        id: u32,
         block_cache: Option<Arc<BlockCache>>,
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
