@@ -14,9 +14,11 @@ mod storage;
 mod transaction;
 mod value;
 mod wal;
+mod db_config;
 
 #[cfg(test)]
 mod db_tests;
 
 pub use db::*;
 pub use value::*;
+pub use db_config::*;

@@ -18,7 +18,7 @@ use crossbeam::channel;
 use parking_lot::RwLock;
 
 use crate::cache::BlockCache;
-use crate::{Key, OpType};
+use crate::{BLOCK_CACHE_SIZE, Key, MEMTABLE_SIZE_LIMIT, OpType, SST_LEVEL_LIMIT};
 
 use crate::daemon::DbDaemon;
 use crate::entry::EntryBuilder;
@@ -34,15 +34,6 @@ use crate::storage::file::FileStorage;
 use crate::wal::iterator::JournalIterator;
 use crate::wal::Journal;
 use crate::OpType::{Delete, Get, Put};
-
-pub const KB: usize = 1024;
-pub const MB: usize = 1024 * KB;
-pub const GB: usize = 1024 * MB;
-
-pub const MEMTABLE_SIZE_LIMIT: usize = 4 * MB;
-pub const BLOCK_CACHE_SIZE: u64 = 4 * GB as u64;
-pub const MIN_VSST_SIZE: u64 = 4 * KB as u64;
-pub const SST_LEVEL_LIMIT: u32 = 6;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DbInner {
@@ -69,7 +60,7 @@ pub struct Db {
     vsst_cache: Arc<BlockCache>,
 
     flush_chan: (channel::Sender<()>, channel::Receiver<()>),
-    compaction_chan: (channel::Sender<()>, channel::Receiver<()>),
+    compaction_chan: (channel::Sender<u32>, channel::Receiver<u32>),
     exit_chan: (channel::Sender<()>, channel::Receiver<()>),
     daemon: Arc<DbDaemon>,
     manifest: Arc<RwLock<Manifest>>,
@@ -93,6 +84,15 @@ impl Db {
             for _ in _flush_rx {
                 if let Err(err) = _daemon.rotate() {
                     eprintln!("rotate failed: {}", err)
+                }
+            }
+        });
+        let _compaction_rx = self.compaction_chan.1.clone();
+        let _daemon = self.daemon.clone();
+        thread::spawn(move || {
+            for level in _compaction_rx {
+                if let Err(err) = _daemon.compaction(level) {
+                    eprintln!("compaction failed: {}", err)
                 }
             }
         });
@@ -286,6 +286,9 @@ impl Db {
         current.write(manifest_path.file_name().unwrap().as_bytes())?;
 
         // 构建Db
+        let flush_chan = channel::unbounded();
+        let compaction_chan = channel::unbounded();
+        let exit_chan = channel::bounded(1);
         let inner = Arc::new(RwLock::new(Arc::new(DbInner {
             wal: Arc::new(Journal::open(Db::path_of_wal(&path))?),
             frozen_wal: vec![],
@@ -306,15 +309,19 @@ impl Db {
             sst_cache: sst_cache.clone(),
             vsst_cache: vsst_cache.clone(),
 
-            flush_chan: channel::unbounded(),
-            compaction_chan: channel::unbounded(),
-            exit_chan: channel::bounded(1),
+            flush_chan: flush_chan.clone(),
+            compaction_chan: compaction_chan.clone(),
+            exit_chan: exit_chan.clone(),
             daemon: Arc::new(DbDaemon::new(
                 inner,
                 sst_cache,
                 vsst_cache,
                 manifest.clone(),
                 path,
+
+                flush_chan.clone(),
+                compaction_chan.clone(),
+                exit_chan.clone()
             )),
             manifest,
         })
@@ -361,19 +368,20 @@ impl Db {
         }
 
         // sst
-        let mut iters = Vec::new();
-        iters.reserve(snapshot.levels[0].len());
-        for table in snapshot.levels[0].iter().rev() {
-            iters.push(Box::new(VSsTableIterator::create_and_seek_to_key(
-                table.clone(),
-                key,
-                snapshot.vssts.clone(),
-            )?));
-        }
-        // TODO
-        let iter = MergeIterator::create(iters);
-        if iter.is_valid() {
-            return Ok(Some(Bytes::copy_from_slice(iter.value())));
+        for level in 0..SST_LEVEL_LIMIT {
+            let mut iters = Vec::new();
+            iters.reserve(snapshot.levels[level as usize].len());
+            for table in snapshot.levels[level as usize].iter().rev() {
+                iters.push(Box::new(VSsTableIterator::create_and_seek_to_key(
+                    table.clone(),
+                    key,
+                    snapshot.vssts.clone(),
+                )?));
+            }
+            let iter = MergeIterator::create(iters);
+            if iter.is_valid() && iter.key() == key {
+                return Ok(Some(Bytes::copy_from_slice(iter.value())));
+            }
         }
 
         Ok(None)

@@ -5,7 +5,7 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 
 use crate::db::Db;
-use crate::{KB, MEMTABLE_SIZE_LIMIT};
+use crate::{KB, MEMTABLE_SIZE_LIMIT, MIN_VSST_SIZE, SST_LEVEL_LIMIT};
 
 impl Db {
     fn print_debug_info(&self) {
@@ -59,7 +59,7 @@ fn test_recover() {
     let k1 = Bytes::from("k1");
     let v1 = Bytes::from("v1");
     let big_k1 = Bytes::from("big_ke");
-    let big_v1 = BytesMut::zeroed(10 * KB).freeze();
+    let big_v1 = BytesMut::zeroed(MIN_VSST_SIZE as usize * 2).freeze();
     let _k1 = Bytes::from("tmp_k1");
     let _v1 = BytesMut::zeroed(MEMTABLE_SIZE_LIMIT / 40).freeze();
 

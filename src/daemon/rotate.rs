@@ -1,48 +1,15 @@
-use crate::cache::BlockCache;
-use crate::db::DbInner;
+use std::sync::Arc;
+use bytes::{BufMut, BytesMut};
+use crate::{Db, L0_SST_NUM_LIMIT, MEMTABLE_SIZE_LIMIT, MIN_VSST_SIZE};
+use crate::daemon::DbDaemon;
 use crate::entry::EntryBuilder;
 use crate::memtable::MemTable;
-use crate::meta::manifest::{Manifest, ManifestItem};
+use crate::meta::manifest::ManifestItem;
 use crate::record::RecordBuilder;
 use crate::sstable::builder::SsTableBuilder;
 use crate::wal::Journal;
-use crate::{Db, MEMTABLE_SIZE_LIMIT, MIN_VSST_SIZE};
-
-use bytes::{BufMut, BytesMut};
-use parking_lot::RwLock;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-#[derive(Debug)]
-pub(crate) struct DbDaemon {
-    inner: Arc<RwLock<Arc<DbInner>>>,
-    sst_cache: Arc<BlockCache>,
-    vsst_cache: Arc<BlockCache>,
-    manifest: Arc<RwLock<Manifest>>,
-    path: Arc<PathBuf>,
-}
 
 impl DbDaemon {
-    pub fn new(
-        db_inner: Arc<RwLock<Arc<DbInner>>>,
-        sst_cache: Arc<BlockCache>,
-        vsst_cache: Arc<BlockCache>,
-        manifest: Arc<RwLock<Manifest>>,
-        path: Arc<PathBuf>,
-    ) -> Self {
-        DbDaemon {
-            inner: db_inner,
-            sst_cache,
-            vsst_cache,
-            manifest,
-            path,
-        }
-    }
-
-    pub fn compaction(&self) -> anyhow::Result<()> {
-        unimplemented!()
-    }
-
     pub fn rotate(&self) -> anyhow::Result<()> {
         let mut rotate = false;
         {
@@ -150,7 +117,14 @@ impl DbDaemon {
             }
             snapshot.wal.rename(Db::path_of_wal(self.path.as_ref()))?;
 
+            let l0_compaction = snapshot.levels[0].len() > L0_SST_NUM_LIMIT;
+
             *guard = Arc::new(snapshot);
+
+            // L0 SST 数量过多，触发合并
+            if l0_compaction {
+                self.compaction_chan.0.send(0)?;
+            }
         }
 
         Ok(())

@@ -44,12 +44,33 @@ impl SsTable {
         })
     }
 
+    pub fn size(&self) -> anyhow::Result<u64> {
+        self.file.size()
+    }
+
     pub fn id(&self) -> u32 {
         self.id
     }
 
+    pub fn delete(&self) -> anyhow::Result<()> {
+        self.file.delete()
+    }
+
     pub fn num_of_blocks(&self) -> usize {
         self.metas.len()
+    }
+
+    pub fn is_overlap(&self, other: Arc<SsTable>) -> bool {
+        if self.metas.is_empty() || other.metas.is_empty() {
+            return false
+        }
+        let (min_key, max_key) = self.key_range();
+        let (other_min_key, other_max_key) = other.key_range();
+        return max_key < other_min_key || other_max_key < min_key
+    }
+
+    pub fn key_range(&self) -> (Bytes, Bytes) {
+        (self.metas.first().unwrap().first_key.clone(), self.metas.last().unwrap().last_key.clone())
     }
 
     fn read_block_with_disk(&self, block_idx: usize) -> Result<Arc<Block>> {
@@ -87,6 +108,7 @@ impl SsTable {
 pub struct SsTableBuilder {
     builder: BlockBuilder,
     first_key: Vec<u8>,
+    last_key: Vec<u8>,
     meta: Vec<MetaBlock>,
     data: Vec<u8>,
 }
@@ -96,6 +118,7 @@ impl SsTableBuilder {
         SsTableBuilder {
             builder: BlockBuilder::new(),
             first_key: Vec::new(),
+            last_key: Vec::new(),
             meta: Vec::new(),
             data: Vec::new(),
         }
@@ -107,6 +130,7 @@ impl SsTableBuilder {
         }
 
         if self.builder.add(e) {
+            self.last_key = e.key.to_vec();
             return;
         }
 
@@ -114,6 +138,7 @@ impl SsTableBuilder {
 
         assert!(self.builder.add(e));
         self.first_key = e.key.to_vec();
+        self.last_key = e.key.to_vec();
     }
 
     fn finish_block(&mut self) {
@@ -122,6 +147,7 @@ impl SsTableBuilder {
         self.meta.push(MetaBlock {
             offset: self.data.len() as u32,
             first_key: std::mem::take(&mut self.first_key).into(),
+            last_key: std::mem::take(&mut self.last_key).into(),
         });
         self.data.extend(encoded_block);
     }
