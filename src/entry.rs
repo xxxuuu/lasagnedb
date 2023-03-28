@@ -1,5 +1,5 @@
-use std::fmt::{Debug, Formatter, Pointer};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use std::fmt::{Debug, Formatter};
 
 use crate::OpType;
 

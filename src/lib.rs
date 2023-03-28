@@ -4,6 +4,8 @@ mod block;
 mod cache;
 mod daemon;
 mod db;
+mod db_config;
+mod db_iterator;
 mod entry;
 mod iterator;
 mod memtable;
@@ -14,12 +16,10 @@ mod storage;
 mod transaction;
 mod value;
 mod wal;
-mod db_config;
-mod db_iterator;
 
 #[cfg(test)]
 mod db_tests;
 
 pub use db::*;
-pub use value::*;
 pub use db_config::*;
+pub use value::*;

@@ -3,13 +3,13 @@ use std::fs::{File, OpenOptions};
 
 use std::io::{Read, Write};
 
+use std::fmt::Debug;
 use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::{fs, mem, thread};
-use std::fmt::Debug;
+use std::{fs, thread};
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -17,11 +17,11 @@ use bytes::Bytes;
 use crossbeam::channel;
 
 use parking_lot::RwLock;
-use tracing::{debug, info, instrument, span, trace, warn};
-use tracing::field::debug;
+
+use tracing::{debug, instrument, span, warn};
 
 use crate::cache::BlockCache;
-use crate::{BLOCK_CACHE_SIZE, Key, MEMTABLE_SIZE_LIMIT, OpType, SST_LEVEL_LIMIT};
+use crate::{Key, OpType, BLOCK_CACHE_SIZE, MEMTABLE_SIZE_LIMIT, SST_LEVEL_LIMIT};
 
 use crate::daemon::DbDaemon;
 use crate::entry::EntryBuilder;
@@ -137,7 +137,7 @@ impl Db {
         u32,
         HashMap<u32, Arc<SsTable>>,
         u32,
-        Arc<MemTable>
+        Arc<MemTable>,
     )> {
         // 从 MANIFEST 恢复元信息
         let mut iter = ManifestIterator::create_and_seek_to_first(manifest)?;
@@ -224,7 +224,7 @@ impl Db {
         let wal = Arc::new(Journal::open(Db::path_of_wal(&path))?);
         let memtable = Arc::new(MemTable::new());
         if wal.num_of_records() > 0 {
-            let mut wal_iter = JournalIterator::create_and_seek_to_first(wal.clone())?;
+            let mut wal_iter = JournalIterator::create_and_seek_to_first(wal)?;
             while wal_iter.is_valid() {
                 let wal_item = wal_iter.record_item();
                 let entry = wal_item.as_ref();
@@ -308,7 +308,7 @@ impl Db {
             vssts: Arc::new(RwLock::new(vssts)),
             seq_num: 1,
             sst_id,
-            vsst_id
+            vsst_id,
         })));
 
         let path = Arc::new(PathBuf::from(path.as_ref()));
@@ -328,10 +328,9 @@ impl Db {
                 vsst_cache,
                 manifest.clone(),
                 path,
-
-                flush_chan.clone(),
-                compaction_chan.clone(),
-                exit_chan.clone()
+                flush_chan,
+                compaction_chan,
+                exit_chan,
             )),
             manifest,
         })

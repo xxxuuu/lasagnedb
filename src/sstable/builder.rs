@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use bloomfilter::Bloom;
 use bytes::{Buf, BufMut, Bytes};
-use serde::{Deserialize, Serialize};
+
 use tracing::instrument;
 
 use crate::block::builder::{Block, BlockBuilder};
@@ -61,16 +61,18 @@ impl SsTable {
         let filter_len = (&file.read(len - 12, 4)?[..]).get_u32_le();
 
         let mut metas = vec![];
-        let mut buf = Bytes::from(
-            file.read(meta_offset as u64, len - 12 - filter_len as u64 - meta_offset as u64)?);
+        let mut buf = Bytes::from(file.read(
+            meta_offset as u64,
+            len - 12 - filter_len as u64 - meta_offset as u64,
+        )?);
         while buf.has_remaining() {
             metas.push(MetaBlock::decode_with_bytes(&mut buf));
         }
         let bloom = if filter_len == 0 {
             None
         } else {
-            let _bloom: Bloom<Bytes> = postcard::from_bytes(
-                &file.read(filter_offset as u64, filter_len as u64)?[..])?;
+            let _bloom: Bloom<Bytes> =
+                postcard::from_bytes(&file.read(filter_offset as u64, filter_len as u64)?[..])?;
             Some(Arc::new(_bloom))
         };
 
@@ -80,7 +82,7 @@ impl SsTable {
             metas,
             meta_offset,
             cache: _block_cache,
-            bloom
+            bloom,
         })
     }
 
@@ -104,21 +106,24 @@ impl SsTable {
     pub fn maybe_contains_key(&self, key: &Bytes) -> bool {
         match &self.bloom {
             None => true,
-            Some(bloom) => bloom.check(key)
+            Some(bloom) => bloom.check(key),
         }
     }
 
     pub fn is_overlap(&self, other: Arc<SsTable>) -> bool {
         if self.metas.is_empty() || other.metas.is_empty() {
-            return false
+            return false;
         }
         let (min_key, max_key) = self.key_range();
         let (other_min_key, other_max_key) = other.key_range();
-        return max_key < other_min_key || other_max_key < min_key
+        max_key < other_min_key || other_max_key < min_key
     }
 
     pub fn key_range(&self) -> (Bytes, Bytes) {
-        (self.metas.first().unwrap().first_key.clone(), self.metas.last().unwrap().last_key.clone())
+        (
+            self.metas.first().unwrap().first_key.clone(),
+            self.metas.last().unwrap().last_key.clone(),
+        )
     }
 
     fn read_block_with_disk(&self, block_idx: usize) -> Result<Arc<Block>> {
