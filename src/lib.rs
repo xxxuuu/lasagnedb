@@ -15,6 +15,7 @@ mod transaction;
 mod value;
 mod wal;
 mod db_config;
+mod db_iterator;
 
 #[cfg(test)]
 mod db_tests;

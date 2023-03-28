@@ -1,8 +1,12 @@
 use std::io::Read;
+use std::sync::Once;
 use std::thread;
 use std::time::Duration;
+use bloomfilter::Bloom;
 
 use bytes::{Bytes, BytesMut};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::Registry;
 
 use crate::db::Db;
 use crate::{KB, MEMTABLE_SIZE_LIMIT, MIN_VSST_SIZE, SST_LEVEL_LIMIT};
@@ -25,8 +29,22 @@ impl Db {
     }
 }
 
+static INIT: Once = Once::new();
+
+fn setup() {
+    println!("JAEGER_ENDPOINT: {}", env!("JAEGER_ENDPOINT"));
+    let tracer = opentelemetry_jaeger::new_pipeline()
+        .with_agent_endpoint(env!("JAEGER_ENDPOINT"))
+        .with_service_name("lasagnedb")
+        .install_simple().unwrap();
+    let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+    let subscriber = Registry::default().with(opentelemetry);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+}
+
 #[test]
 fn test_write_read() {
+    INIT.call_once(|| setup());
     let data_dir = tempfile::tempdir().unwrap();
     println!("tempdir: {}", data_dir.path().to_str().unwrap());
 
@@ -53,6 +71,7 @@ fn test_write_read() {
 
 #[test]
 fn test_recover() {
+    INIT.call_once(|| setup());
     let data_dir = tempfile::tempdir().unwrap();
     println!("tempdir: {}", data_dir.path().to_str().unwrap());
 
@@ -82,6 +101,7 @@ fn test_recover() {
 
 #[test]
 fn test_rotate() {
+    INIT.call_once(|| setup());
     let data_dir = tempfile::tempdir().unwrap();
     println!("tempdir: {}", data_dir.path().to_str().unwrap());
 

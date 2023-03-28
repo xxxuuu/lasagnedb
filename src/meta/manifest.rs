@@ -1,9 +1,11 @@
+use std::fmt::Debug;
 use std::mem;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use tracing::instrument;
 
 use crate::record::{Record, RecordItem};
 use crate::storage::file::FileStorage;
@@ -15,7 +17,8 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    #[instrument]
+    pub fn open(path: impl AsRef<Path> + Debug) -> anyhow::Result<Self> {
         let file = FileStorage::open(path)?;
 
         let mut records = vec![];

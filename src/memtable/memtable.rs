@@ -5,6 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use crossbeam_skiplist::SkipMap;
+use tracing::instrument;
 
 use crate::memtable::iterator::MemTableIterator;
 
@@ -25,12 +26,14 @@ impl MemTable {
         }
     }
 
+    #[instrument(skip_all)]
     pub fn put(&self, key: Key, value: Bytes) {
         self.size
             .fetch_add(key.len() + value.len(), Ordering::Release);
         self.db.insert(key, value);
     }
 
+    #[instrument(skip_all)]
     pub fn get(&self, key: &Key) -> Option<(Key, Bytes)> {
         match self.db.range(key..).next() {
             None => None,

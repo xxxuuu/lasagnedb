@@ -3,6 +3,7 @@ use crate::entry::{Entry, EntryBuilder};
 use std::sync::Arc;
 
 /// Iterates on a block.
+#[derive(Debug)]
 pub struct BlockIterator {
     block: Arc<Block>,
     meta: u32,

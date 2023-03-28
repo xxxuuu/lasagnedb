@@ -1,7 +1,9 @@
 use crate::record::RecordIterator;
 use crate::wal::{Journal, JournalItem};
 use std::sync::Arc;
+use tracing::instrument;
 
+#[derive(Debug)]
 pub struct JournalIterator {
     journal: Arc<Journal>,
     record_iter: RecordIterator<JournalItem>,
@@ -9,6 +11,7 @@ pub struct JournalIterator {
 }
 
 impl JournalIterator {
+    #[instrument]
     pub fn create_and_seek_to_first(journal: Arc<Journal>) -> anyhow::Result<Self> {
         Ok(Self {
             journal: journal.clone(),
@@ -25,6 +28,7 @@ impl JournalIterator {
         self.record_iter.record_item()
     }
 
+    #[instrument]
     pub fn next(&mut self) -> anyhow::Result<()> {
         self.record_iter.next();
         if !self.record_iter.is_valid() {

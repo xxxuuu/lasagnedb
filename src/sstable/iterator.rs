@@ -7,7 +7,9 @@ use bytes::Buf;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::instrument;
 
+#[derive(Debug)]
 pub struct SsTableIterator {
     table: Arc<SsTable>,
     block_iter: BlockIterator,
@@ -91,6 +93,7 @@ impl StorageIterator for SsTableIterator {
         self.block_iter.is_valid()
     }
 
+    #[instrument]
     fn next(&mut self) -> Result<()> {
         self.block_iter.next();
         if !self.block_iter.is_valid() {
@@ -104,6 +107,7 @@ impl StorageIterator for SsTableIterator {
     }
 }
 
+#[derive(Debug)]
 pub struct VSsTableIterator {
     iter: SsTableIterator,
     vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
@@ -128,6 +132,7 @@ impl VSsTableIterator {
     }
 
     /// Create a new iterator and seek to the first key-value pair.
+    #[instrument]
     pub fn create_and_seek_to_first(
         table: Arc<SsTable>,
         vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
@@ -142,6 +147,7 @@ impl VSsTableIterator {
     }
 
     /// Create a new iterator and seek to the first key-value pair which >= `key`.
+    #[instrument(skip(key))]
     pub fn create_and_seek_to_key(
         table: Arc<SsTable>,
         key: &[u8],
@@ -176,6 +182,7 @@ impl StorageIterator for VSsTableIterator {
         self.iter.is_valid()
     }
 
+    #[instrument]
     fn next(&mut self) -> Result<()> {
         self.iter.next()?;
         self.update_kv()

@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter, Pointer};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::OpType;
@@ -10,7 +11,7 @@ use crate::OpType;
 /// | meta(4 bytes) | key length(8 bytes) | key | value length(8 bytes) | value |
 /// +---------------+---------------------+-----+-----------------------+-------+
 /// ```
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Entry {
     pub(crate) meta: u32,
     pub(crate) key: Bytes,
@@ -64,6 +65,18 @@ impl Entry {
         let e = Self::decode(&buf[..]);
         buf.advance(e.size());
         e
+    }
+}
+
+impl Debug for Entry {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry")
+            .field("meta", &self.meta)
+            .field("key len", &self.key.len())
+            .field("key first 4 bytes", &(&self.key.get(..4)))
+            .field("value len", &self.value.len())
+            .field("value first 4 bytes", &(&self.value.get(..4)))
+            .finish()
     }
 }
 

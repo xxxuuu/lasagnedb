@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::cell::RefCell;
+use std::fmt::Debug;
 
 use std::sync::Arc;
 
@@ -102,6 +103,7 @@ pub trait RecordItem {
     fn size(&self) -> usize;
 }
 
+#[derive(Debug)]
 pub struct RecordIterator<T> {
     record: Arc<Record<T>>,
     item: RefCell<Option<T>>,

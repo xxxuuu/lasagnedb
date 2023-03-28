@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use bytes::{BufMut, BytesMut};
+use tracing::instrument;
 use crate::{Db, L0_SST_NUM_LIMIT, MEMTABLE_SIZE_LIMIT, MIN_VSST_SIZE};
 use crate::daemon::DbDaemon;
 use crate::entry::EntryBuilder;
@@ -10,6 +11,7 @@ use crate::sstable::builder::SsTableBuilder;
 use crate::wal::Journal;
 
 impl DbDaemon {
+    #[instrument]
     pub fn rotate(&self) -> anyhow::Result<()> {
         let mut rotate = false;
         {

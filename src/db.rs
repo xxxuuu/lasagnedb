@@ -8,7 +8,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::{fs, thread};
+use std::{fs, mem, thread};
+use std::fmt::Debug;
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -16,6 +17,8 @@ use bytes::Bytes;
 use crossbeam::channel;
 
 use parking_lot::RwLock;
+use tracing::{debug, info, instrument, span, trace, warn};
+use tracing::field::debug;
 
 use crate::cache::BlockCache;
 use crate::{BLOCK_CACHE_SIZE, Key, MEMTABLE_SIZE_LIMIT, OpType, SST_LEVEL_LIMIT};
@@ -70,7 +73,8 @@ pub struct Options {}
 
 impl Db {
     /// open database from file system
-    pub fn open_file(path: impl AsRef<Path>) -> anyhow::Result<Db> {
+    #[instrument]
+    pub fn open_file(path: impl AsRef<Path> + Debug) -> anyhow::Result<Db> {
         fs::create_dir_all(&path).context("create data dir failed")?;
         let mut db = Db::open(&path)?;
         db.run_background_tasks();
@@ -83,7 +87,7 @@ impl Db {
         thread::spawn(move || {
             for _ in _flush_rx {
                 if let Err(err) = _daemon.rotate() {
-                    eprintln!("rotate failed: {}", err)
+                    warn!("rotate failed: {}", err)
                 }
             }
         });
@@ -92,7 +96,7 @@ impl Db {
         thread::spawn(move || {
             for level in _compaction_rx {
                 if let Err(err) = _daemon.compaction(level) {
-                    eprintln!("compaction failed: {}", err)
+                    warn!("compaction failed: {}", err)
                 }
             }
         });
@@ -122,8 +126,9 @@ impl Db {
         base_path.as_ref().join(format!("{:05}.VSST", vsst_id))
     }
 
+    #[instrument]
     pub fn recover(
-        path: impl AsRef<Path>,
+        path: impl AsRef<Path> + Debug,
         manifest: Arc<Manifest>,
         sst_cache: Arc<BlockCache>,
         vsst_cache: Arc<BlockCache>,
@@ -132,8 +137,7 @@ impl Db {
         u32,
         HashMap<u32, Arc<SsTable>>,
         u32,
-        Arc<MemTable>,
-        Arc<Journal>,
+        Arc<MemTable>
     )> {
         // 从 MANIFEST 恢复元信息
         let mut iter = ManifestIterator::create_and_seek_to_first(manifest)?;
@@ -142,6 +146,7 @@ impl Db {
         let mut sst_map: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut vsst_set: HashSet<u32> = HashSet::new();
         let mut seq_num = 1;
+        let iter_manifest_span = span!(tracing::Level::TRACE, "iterate manifest").entered();
         while iter.is_valid() {
             let record_item = iter.record_item();
             match record_item {
@@ -182,7 +187,10 @@ impl Db {
             }
             iter.next()?;
         }
+        drop(iter_manifest_span);
+
         // 恢复 SST
+        let recover_sst_span = span!(tracing::Level::TRACE, "recover sst info").entered();
         let mut levels: Vec<Vec<Arc<SsTable>>> = vec![];
         levels.resize(SST_LEVEL_LIMIT as usize, vec![]);
         for level in 0..SST_LEVEL_LIMIT {
@@ -209,8 +217,10 @@ impl Db {
                 )?),
             );
         }
+        drop(recover_sst_span);
 
         // 重新执行 LOG 操作
+        let redo_log_span = span!(tracing::Level::TRACE, "redo log").entered();
         let wal = Arc::new(Journal::open(Db::path_of_wal(&path))?);
         let memtable = Arc::new(MemTable::new());
         if wal.num_of_records() > 0 {
@@ -224,11 +234,13 @@ impl Db {
                 wal_iter.next()?;
             }
         }
+        drop(redo_log_span);
 
-        Ok((levels, now_sst_id, vssts, now_vsst_id, memtable, wal))
+        Ok((levels, now_sst_id, vssts, now_vsst_id, memtable))
     }
 
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    #[instrument]
+    pub fn open(path: impl AsRef<Path> + Debug) -> anyhow::Result<Self> {
         let current_path = Db::path_of_current(&path);
         let version = 0;
 
@@ -236,7 +248,6 @@ impl Db {
         levels.resize(SST_LEVEL_LIMIT as usize, vec![]);
         let mut vssts: HashMap<u32, Arc<SsTable>> = HashMap::new();
         let mut memtable = Arc::new(MemTable::new());
-        let mut wal = None;
         let mut sst_id = 0;
         let mut vsst_id = 0;
         let sst_cache = Arc::new(BlockCache::new(BLOCK_CACHE_SIZE));
@@ -255,10 +266,9 @@ impl Db {
             // 根据 MANIFEST 恢复数据
             if manifest.num_of_records() > 0 {
                 let recover_res =
-                    Db::recover(&path, manifest, sst_cache.clone(), vsst_cache.clone());
-                let (_levels, _sst_id, _vssts, _vsst_id, _memtable, _wal) = recover_res?;
-                (levels, sst_id, vssts, vsst_id, memtable, wal) =
-                    (_levels, _sst_id, _vssts, _vsst_id, _memtable, Some(_wal));
+                    Db::recover(&path, manifest, sst_cache.clone(), vsst_cache.clone())?;
+                debug!("recover result: {:?}", recover_res);
+                (levels, sst_id, vssts, vsst_id, memtable) = recover_res;
             }
         }
 
@@ -298,7 +308,7 @@ impl Db {
             vssts: Arc::new(RwLock::new(vssts)),
             seq_num: 1,
             sst_id,
-            vsst_id,
+            vsst_id
         })));
 
         let path = Arc::new(PathBuf::from(path.as_ref()));
@@ -337,16 +347,19 @@ impl Db {
     }
 
     /// put a key-value pair
+    #[instrument(skip_all)]
     pub fn put(&mut self, key: Bytes, value: Bytes) -> anyhow::Result<()> {
         self.append(key, Some(value))
     }
 
     /// delete value by key
+    #[instrument(skip_all)]
     pub fn delete(&mut self, key: Bytes) -> anyhow::Result<()> {
         self.append(key, None)
     }
 
     /// get value by key
+    #[instrument(skip_all)]
     pub fn get(&self, key: &Bytes) -> anyhow::Result<Option<Bytes>> {
         let (snapshot, seq_num) = {
             let guard = self.inner.read();
@@ -387,10 +400,12 @@ impl Db {
         Ok(None)
     }
 
+    #[instrument(skip_all)]
     pub fn scan(&self, _begin: Bound<Key>, _end: Bound<Key>) {
         unimplemented!()
     }
 
+    #[instrument(skip_all)]
     fn append(&self, key: Bytes, value: Option<Bytes>) -> anyhow::Result<()> {
         let (value, op_type) = match value {
             None => (Bytes::new(), Delete),
@@ -417,27 +432,5 @@ impl Db {
         }
 
         Ok(())
-    }
-}
-
-pub struct DbIterator {}
-
-impl DbIterator {}
-
-impl StorageIterator for DbIterator {
-    fn key(&self) -> &[u8] {
-        todo!()
-    }
-
-    fn value(&self) -> &[u8] {
-        todo!()
-    }
-
-    fn is_valid(&self) -> bool {
-        todo!()
-    }
-
-    fn next(&mut self) -> anyhow::Result<()> {
-        todo!()
     }
 }

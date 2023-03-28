@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use bytes::Bytes;
+use tracing::instrument;
 use crate::daemon::DbDaemon;
 use crate::db::DbInner;
 use crate::entry::EntryBuilder;
@@ -14,6 +15,7 @@ use crate::sstable::builder::{SsTable, SsTableBuilder};
 use crate::sstable::iterator::{SsTableIterator, VSsTableIterator};
 
 impl DbDaemon {
+    #[instrument]
     pub fn compaction(&self, level: u32) -> anyhow::Result<()> {
         if level == SST_LEVEL_LIMIT {
             return Ok(())
@@ -81,14 +83,16 @@ impl DbDaemon {
         Ok(())
     }
 
+    #[instrument]
     fn pick_base_sst(snapshot: &DbInner, level: u32) -> Option<Arc<SsTable>> {
         // TODO 更好的挑选方法
-        match snapshot.levels[0].get(0) {
+        match snapshot.levels[level as usize].get(0) {
             None => None,
             Some(_sst) => Some(_sst.clone())
         }
     }
 
+    #[instrument]
     fn select_overlap_sst(snapshot: &DbInner,
                           level: u32, base_sst: Arc<SsTable>) -> (Vec<Arc<SsTable>>, Vec<Arc<SsTable>>) {
         let (mut min_key, mut max_key) = base_sst.key_range();
@@ -150,6 +154,7 @@ impl DbDaemon {
         return (li_sst, li1_sst)
     }
 
+    #[instrument]
     fn merge(snapshot: &DbInner, ssts: Vec<Arc<SsTable>>) -> anyhow::Result<SsTableBuilder> {
         let mut sst_iters = vec![];
         for _sst in ssts {

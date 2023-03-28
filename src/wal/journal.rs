@@ -1,22 +1,25 @@
+use std::fmt::{Debug, Formatter};
 use anyhow::anyhow;
 
 use std::path::Path;
 use std::sync::Arc;
 
 use bytes::{Buf, Bytes};
+use tracing::instrument;
 
 use crate::entry::Entry;
 use crate::record::{Record, RecordBuilder, RecordItem};
 use crate::storage::file::FileStorage;
 
-#[derive(Debug)]
 pub struct Journal {
     file: FileStorage,
     records: Vec<Arc<Record<JournalItem>>>,
 }
 
 impl Journal {
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    #[instrument]
+    pub fn open(path: impl AsRef<Path> + Debug) -> anyhow::Result<Self> {
+        // TODO 优化
         let file = FileStorage::open(path)?;
         let mut records = vec![];
 
@@ -40,6 +43,7 @@ impl Journal {
         self.file.delete()
     }
 
+    #[instrument(skip_all)]
     pub fn write(&self, batches: Vec<Entry>) -> anyhow::Result<()> {
         let mut builder = RecordBuilder::new();
         for i in batches {
@@ -61,6 +65,15 @@ impl Journal {
         }
 
         Ok(self.records[record_idx].clone())
+    }
+}
+
+impl Debug for Journal {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Journal")
+            .field("file", &self.file)
+            .field("records len", &self.records.len())
+            .finish()
     }
 }
 
