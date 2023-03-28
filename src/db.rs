@@ -385,11 +385,13 @@ impl Db {
             let mut iters = Vec::new();
             iters.reserve(snapshot.levels[level as usize].len());
             for table in snapshot.levels[level as usize].iter().rev() {
-                iters.push(Box::new(VSsTableIterator::create_and_seek_to_key(
-                    table.clone(),
-                    key,
-                    snapshot.vssts.clone(),
-                )?));
+                if table.maybe_contains_key(key) {
+                    iters.push(Box::new(VSsTableIterator::create_and_seek_to_key(
+                        table.clone(),
+                        key,
+                        snapshot.vssts.clone(),
+                    )?));
+                }
             }
             let iter = MergeIterator::create(iters);
             if iter.is_valid() && iter.key() == key {

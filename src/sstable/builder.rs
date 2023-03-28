@@ -2,7 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use bloomfilter::Bloom;
 use bytes::{Buf, BufMut, Bytes};
+use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 use crate::block::builder::{Block, BlockBuilder};
 use crate::cache::BlockCache;
@@ -10,6 +13,30 @@ use crate::entry::Entry;
 use crate::sstable::meta::MetaBlock;
 use crate::storage::file::FileStorage;
 
+/// layout:
+/// ```text
+/// +------------------------+
+/// | data block             |
+/// +------------------------+
+/// | ...                    |
+/// +------------------------+
+/// | data block             |
+/// +------------------------+
+/// | meta block             |
+/// +------------------------+
+/// | ...                    |
+/// +------------------------+
+/// | meta block             |
+/// +------------------------+
+/// | bloom filter           |
+/// +------------------------+
+/// | filter len(4 bytes)    |
+/// +------------------------+
+/// | filter offset(4 bytes) |
+/// +------------------------+
+/// | meta offset(4 bytes)   |
+/// +------------------------+
+/// ```
 #[derive(Debug)]
 pub struct SsTable {
     id: u32,
@@ -17,9 +44,11 @@ pub struct SsTable {
     metas: Vec<MetaBlock>,
     meta_offset: u32,
     cache: Option<Arc<BlockCache>>,
+    bloom: Option<Arc<Bloom<Bytes>>>,
 }
 
 impl SsTable {
+    #[instrument(skip(_block_cache))]
     pub fn open(
         _id: u32,
         _block_cache: Option<Arc<BlockCache>>,
@@ -28,12 +57,22 @@ impl SsTable {
         let file = _file;
         let len = file.size()?;
         let meta_offset = (&file.read(len - 4, 4)?[..]).get_u32_le();
+        let filter_offset = (&file.read(len - 8, 4)?[..]).get_u32_le();
+        let filter_len = (&file.read(len - 12, 4)?[..]).get_u32_le();
 
         let mut metas = vec![];
-        let mut buf = Bytes::from(file.read(meta_offset as u64, len - 4 - meta_offset as u64)?);
+        let mut buf = Bytes::from(
+            file.read(meta_offset as u64, len - 12 - filter_len as u64 - meta_offset as u64)?);
         while buf.has_remaining() {
             metas.push(MetaBlock::decode_with_bytes(&mut buf));
         }
+        let bloom = if filter_len == 0 {
+            None
+        } else {
+            let _bloom: Bloom<Bytes> = postcard::from_bytes(
+                &file.read(filter_offset as u64, filter_len as u64)?[..])?;
+            Some(Arc::new(_bloom))
+        };
 
         Ok(Self {
             id: _id,
@@ -41,6 +80,7 @@ impl SsTable {
             metas,
             meta_offset,
             cache: _block_cache,
+            bloom
         })
     }
 
@@ -58,6 +98,14 @@ impl SsTable {
 
     pub fn num_of_blocks(&self) -> usize {
         self.metas.len()
+    }
+
+    /// 指定 key 是否存在于 SST，基于 bloom filter，返回 true 则可能存在，false 则一定不存在
+    pub fn maybe_contains_key(&self, key: &Bytes) -> bool {
+        match &self.bloom {
+            None => true,
+            Some(bloom) => bloom.check(key)
+        }
     }
 
     pub fn is_overlap(&self, other: Arc<SsTable>) -> bool {
@@ -111,6 +159,7 @@ pub struct SsTableBuilder {
     last_key: Vec<u8>,
     meta: Vec<MetaBlock>,
     data: Vec<u8>,
+    bloom: Bloom<Bytes>,
 }
 
 impl SsTableBuilder {
@@ -121,10 +170,13 @@ impl SsTableBuilder {
             last_key: Vec::new(),
             meta: Vec::new(),
             data: Vec::new(),
+            bloom: Bloom::new(20, 1000),
         }
     }
 
     pub fn add(&mut self, e: &Entry) {
+        self.bloom.set(&e.key);
+
         if self.first_key.is_empty() {
             self.first_key = e.key.to_vec();
         }
@@ -168,7 +220,16 @@ impl SsTableBuilder {
         self.meta
             .iter()
             .for_each(|meta_block| self.data.extend(&meta_block.encode()));
+
+        let bloom = postcard::to_allocvec(&self.bloom)?;
+        let filter_offset = self.data.len() as u32;
+        let filter_len = bloom.len() as u32;
+        self.data.extend(bloom);
+        self.data.put_u32_le(filter_len);
+        self.data.put_u32_le(filter_offset);
+
         self.data.put_u32_le(meta_offset);
+
         let file = FileStorage::create(path, self.data.clone())?;
         Ok(SsTable {
             id,
@@ -176,6 +237,7 @@ impl SsTableBuilder {
             metas: self.meta,
             meta_offset,
             cache: block_cache,
+            bloom: Some(Arc::new(self.bloom)),
         })
     }
 }

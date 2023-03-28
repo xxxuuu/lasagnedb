@@ -32,14 +32,16 @@ impl Db {
 static INIT: Once = Once::new();
 
 fn setup() {
-    println!("JAEGER_ENDPOINT: {}", env!("JAEGER_ENDPOINT"));
-    let tracer = opentelemetry_jaeger::new_pipeline()
-        .with_agent_endpoint(env!("JAEGER_ENDPOINT"))
-        .with_service_name("lasagnedb")
-        .install_simple().unwrap();
-    let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-    let subscriber = Registry::default().with(opentelemetry);
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    if let Some(jaeger_endpoint) = option_env!("JAEGER_ENDPOINT") {
+        println!("JAEGER_ENDPOINT: {}", jaeger_endpoint);
+        let tracer = opentelemetry_jaeger::new_pipeline()
+            .with_agent_endpoint(jaeger_endpoint)
+            .with_service_name("lasagnedb")
+            .install_simple().unwrap();
+        let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        let subscriber = Registry::default().with(opentelemetry);
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+    }
 }
 
 #[test]
