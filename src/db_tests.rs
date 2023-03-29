@@ -1,14 +1,16 @@
-
 use std::io::Read;
+use std::ops::Bound::Unbounded;
 use std::sync::Once;
 use std::thread;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
 
 use crate::db::Db;
+use crate::iterator::StorageIterator;
 use crate::{MEMTABLE_SIZE_LIMIT, MIN_VSST_SIZE};
 
 impl Db {
@@ -51,7 +53,7 @@ fn test_write_read() {
     let data_dir = tempfile::tempdir().unwrap();
     println!("tempdir: {}", data_dir.path().to_str().unwrap());
 
-    let mut db = Db::open_file(data_dir.path()).unwrap();
+    let db = Db::open_file(data_dir.path()).unwrap();
 
     let k1 = Bytes::from("k1");
     let v1 = Bytes::from("v1");
@@ -86,7 +88,7 @@ fn test_recover() {
     let _v1 = BytesMut::zeroed(MEMTABLE_SIZE_LIMIT / 40).freeze();
 
     {
-        let mut db = Db::open_file(data_dir.path()).unwrap();
+        let db = Db::open_file(data_dir.path()).unwrap();
         db.put(big_k1.clone(), big_v1.clone()).unwrap();
         for _ in 1..50 {
             db.put(_k1.clone(), _v1.clone()).unwrap();
@@ -108,7 +110,7 @@ fn test_rotate() {
     let data_dir = tempfile::tempdir().unwrap();
     println!("tempdir: {}", data_dir.path().to_str().unwrap());
 
-    let mut db = Db::open_file(data_dir.path()).unwrap();
+    let db = Db::open_file(data_dir.path()).unwrap();
 
     for _ in 1..50 {
         let k1 = Bytes::from("k1");
@@ -120,4 +122,29 @@ fn test_rotate() {
     thread::sleep(Duration::from_secs(2));
     db.print_debug_info();
     assert_eq!(db.inner.read().levels[0].len(), 1);
+}
+
+#[test]
+fn test_iterator() {
+    INIT.call_once(setup);
+
+    let data_dir = tempfile::tempdir().unwrap();
+    println!("tempdir: {}", data_dir.path().to_str().unwrap());
+
+    let db = Db::open_file(data_dir.path()).unwrap();
+    for i in 1..100 {
+        let k1 = Bytes::from(format!("k{:04}", i));
+        let v1 = Bytes::from(format!("v{:04}", i));
+        db.put(k1.clone(), v1.clone()).unwrap();
+    }
+
+    let mut iter = db.scan(Unbounded, Unbounded).unwrap();
+    for i in 1..100 {
+        let key = String::from_utf8_lossy(iter.key());
+        let value = String::from_utf8_lossy(iter.value());
+        assert_eq!(key, format!("k{:04}", i));
+        assert_eq!(value, format!("v{:04}", i));
+        iter.next().unwrap();
+    }
+    assert!(!iter.is_valid());
 }

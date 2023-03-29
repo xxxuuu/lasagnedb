@@ -6,7 +6,7 @@ use crate::iterator::StorageIterator;
 use crate::meta::manifest::ManifestItem;
 use crate::record::RecordBuilder;
 use crate::sstable::builder::{SsTable, SsTableBuilder};
-use crate::sstable::iterator::{VSsTableIterator};
+use crate::sstable::iterator::VSsTableIterator;
 use crate::{OpType, MIN_VSST_SIZE, SST_LEVEL_LIMIT};
 use bytes::Bytes;
 use std::collections::HashSet;

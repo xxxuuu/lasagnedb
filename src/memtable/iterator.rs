@@ -1,54 +1,62 @@
 use std::ops::Bound;
+use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
+use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::map::Range;
+use crossbeam_skiplist::SkipMap;
+use ouroboros::self_referencing;
 
 use crate::iterator::StorageIterator;
 
 use crate::Key;
 
-pub struct MemTableIterator<'a> {
-    iter: Range<'a, Key, (Bound<Key>, Bound<Key>), Key, Bytes>,
-    valid: bool,
-    key: Bytes,
-    value: Bytes,
+#[self_referencing]
+pub struct MemTableIterator {
+    map: Arc<SkipMap<Key, Bytes>>,
+    #[borrows(map)]
+    #[not_covariant]
+    iter: Range<'this, Key, (Bound<Key>, Bound<Key>), Key, Bytes>,
+    item: (Bytes, Bytes),
 }
 
-impl<'a> MemTableIterator<'a> {
-    pub fn new(rang: Range<'a, Key, (Bound<Key>, Bound<Key>), Key, Bytes>) -> Self {
-        let mut i = MemTableIterator {
-            iter: rang,
-            valid: true,
-            key: Bytes::new(),
-            value: Bytes::new(),
-        };
-        i.next().expect("MemTableIterator create failed");
-        i
+impl MemTableIterator {
+    pub fn create(map: Arc<SkipMap<Key, Bytes>>, lower: Bound<Key>, upper: Bound<Key>) -> Self {
+        let mut iter = MemTableIteratorBuilder {
+            map,
+            iter_builder: |map| map.range((lower, upper)),
+            item: (Bytes::from_static(&[]), Bytes::from_static(&[])),
+        }
+        .build();
+        let entry = iter.with_iter_mut(|iter| MemTableIterator::entry_to_item(iter.next()));
+        iter.with_mut(|x| *x.item = entry);
+        iter
+    }
+
+    fn entry_to_item(entry: Option<Entry<'_, Key, Bytes>>) -> (Bytes, Bytes) {
+        entry
+            .map(|x| (x.key().user_key.clone(), x.value().clone()))
+            .unwrap_or_else(|| (Bytes::from_static(&[]), Bytes::from_static(&[])))
     }
 }
 
-impl StorageIterator for MemTableIterator<'_> {
+impl StorageIterator for MemTableIterator {
     fn key(&self) -> &[u8] {
-        &self.key[..]
+        &self.borrow_item().0[..]
     }
 
     fn value(&self) -> &[u8] {
-        &self.value[..]
+        &self.borrow_item().1[..]
     }
 
     fn is_valid(&self) -> bool {
-        self.valid
+        !self.borrow_item().0.is_empty()
     }
 
     fn next(&mut self) -> Result<()> {
-        if let Some(e) = self.iter.next() {
-            self.valid = true;
-            self.key = e.key().encode();
-            self.value = e.value().clone();
-        } else {
-            self.valid = false;
-        }
+        let entry = self.with_iter_mut(|iter| MemTableIterator::entry_to_item(iter.next()));
+        self.with_mut(|x| *x.item = entry);
         Ok(())
     }
 }

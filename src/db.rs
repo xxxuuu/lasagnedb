@@ -24,8 +24,10 @@ use crate::cache::BlockCache;
 use crate::{Key, OpType, BLOCK_CACHE_SIZE, MEMTABLE_SIZE_LIMIT, SST_LEVEL_LIMIT};
 
 use crate::daemon::DbDaemon;
+use crate::db_iterator::{DbIterator, FusedIterator};
 use crate::entry::EntryBuilder;
 use crate::iterator::merge_iterator::MergeIterator;
+use crate::iterator::two_merge_iterator::TwoMergeIterator;
 use crate::iterator::StorageIterator;
 use crate::memtable::MemTable;
 use crate::meta::iterator::ManifestIterator;
@@ -76,12 +78,12 @@ impl Db {
     #[instrument]
     pub fn open_file(path: impl AsRef<Path> + Debug) -> anyhow::Result<Db> {
         fs::create_dir_all(&path).context("create data dir failed")?;
-        let mut db = Db::open(&path)?;
+        let db = Db::open(&path)?;
         db.run_background_tasks();
         Ok(db)
     }
 
-    fn run_background_tasks(&mut self) {
+    fn run_background_tasks(&self) {
         let _flush_rx = self.flush_chan.1.clone();
         let _daemon = self.daemon.clone();
         thread::spawn(move || {
@@ -337,7 +339,7 @@ impl Db {
     }
 
     /// close database connect, that will ensure all committed transactions will be fsync to journal
-    pub fn close(&mut self) -> anyhow::Result<()> {
+    pub fn close(&self) -> anyhow::Result<()> {
         unimplemented!()
     }
 
@@ -347,13 +349,13 @@ impl Db {
 
     /// put a key-value pair
     #[instrument(skip_all)]
-    pub fn put(&mut self, key: Bytes, value: Bytes) -> anyhow::Result<()> {
+    pub fn put(&self, key: Bytes, value: Bytes) -> anyhow::Result<()> {
         self.append(key, Some(value))
     }
 
     /// delete value by key
     #[instrument(skip_all)]
-    pub fn delete(&mut self, key: Bytes) -> anyhow::Result<()> {
+    pub fn delete(&self, key: Bytes) -> anyhow::Result<()> {
         self.append(key, None)
     }
 
@@ -402,11 +404,6 @@ impl Db {
     }
 
     #[instrument(skip_all)]
-    pub fn scan(&self, _begin: Bound<Key>, _end: Bound<Key>) {
-        unimplemented!()
-    }
-
-    #[instrument(skip_all)]
     fn append(&self, key: Bytes, value: Option<Bytes>) -> anyhow::Result<()> {
         let (value, op_type) = match value {
             None => (Bytes::new(), Delete),
@@ -433,5 +430,62 @@ impl Db {
         }
 
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    pub fn scan(
+        &self,
+        lower: Bound<Bytes>,
+        upper: Bound<Bytes>,
+    ) -> anyhow::Result<FusedIterator<DbIterator>> {
+        let snapshot = {
+            let guard = self.inner.read();
+            Arc::clone(&guard)
+        };
+
+        let mut mem_iters = Vec::new();
+        mem_iters.reserve(snapshot.frozen_memtable.len() + 1);
+        mem_iters.push(Box::new(
+            snapshot.memtable.scan(lower.clone(), upper.clone()),
+        ));
+        for _memtable in snapshot.frozen_memtable.iter().rev() {
+            let memtable = _memtable.clone();
+            mem_iters.push(Box::new(memtable.scan(lower.clone(), upper.clone())));
+        }
+        let mem_iter = MergeIterator::create(mem_iters);
+
+        let mut sst_iters = Vec::new();
+        for level in 0..SST_LEVEL_LIMIT {
+            for table in snapshot.levels[level as usize].iter().rev() {
+                let iter = match lower.clone() {
+                    Bound::Included(key) => VSsTableIterator::create_and_seek_to_key(
+                        table.clone(),
+                        &key[..],
+                        snapshot.vssts.clone(),
+                    )?,
+                    Bound::Excluded(key) => {
+                        let mut iter = VSsTableIterator::create_and_seek_to_key(
+                            table.clone(),
+                            &key[..],
+                            snapshot.vssts.clone(),
+                        )?;
+                        if iter.is_valid() && iter.key() == key {
+                            iter.next()?;
+                        }
+                        iter
+                    }
+                    Bound::Unbounded => VSsTableIterator::create_and_seek_to_first(
+                        table.clone(),
+                        snapshot.vssts.clone(),
+                    )?,
+                };
+                sst_iters.push(Box::new(iter));
+            }
+        }
+        let sst_iter = MergeIterator::create(sst_iters);
+
+        let iter = TwoMergeIterator::create(mem_iter, sst_iter)?;
+
+        Ok(FusedIterator::new(DbIterator::new(iter, upper)?))
     }
 }

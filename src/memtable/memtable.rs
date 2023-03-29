@@ -49,9 +49,14 @@ impl MemTable {
         }
     }
 
-    pub fn scan(&self, begin: Bound<Key>, end: Bound<Key>) -> MemTableIterator {
-        let iter = self.db.range((begin, end));
-        MemTableIterator::new(iter)
+    pub fn scan(&self, begin: Bound<Bytes>, end: Bound<Bytes>) -> MemTableIterator {
+        let bytes_2_key = |bound| match bound {
+            Bound::Included(_key) => Bound::Included(Key::new(_key, 1 << (7 - 1), OpType::Get)),
+            Bound::Excluded(_key) => Bound::Included(Key::new(_key, 1 << (7 - 1), OpType::Get)),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        let (lower, upper) = (bytes_2_key(begin), bytes_2_key(end));
+        MemTableIterator::create(self.db.clone(), lower, upper)
     }
 
     pub fn for_each<F: FnMut(&Key, &Bytes)>(&self, mut f: F) {
