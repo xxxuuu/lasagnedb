@@ -22,4 +22,5 @@ mod db_tests;
 
 pub use db::*;
 pub use db_config::*;
+pub use iterator::iterator::StorageIterator;
 pub use value::*;
