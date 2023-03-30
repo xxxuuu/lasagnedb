@@ -419,6 +419,7 @@ impl Db {
 
         let seq_num = guard.seq_num;
         guard.wal.write(vec![entry])?;
+        guard.wal.flush();
 
         let internal_key = Db::make_internal_key(seq_num, op_type, &key);
         guard.memtable.put(internal_key, value);

@@ -51,8 +51,12 @@ impl Journal {
         }
         let record = builder.build();
         self.file.write(&record.encode());
-        self.file.sync();
         Ok(())
+    }
+
+    #[instrument]
+    pub fn flush(&self) {
+        self.file.sync();
     }
 
     pub fn read_record(&self, record_idx: usize) -> anyhow::Result<Arc<Record<JournalItem>>> {

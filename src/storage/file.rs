@@ -1,33 +1,50 @@
+use std::fmt::{Debug, Formatter};
 use std::fs;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use crate::storage::ioarc::IoArc;
 use anyhow::Result;
 use parking_lot::Mutex;
-use thiserror::Error;
+use tracing::instrument;
 
 use crate::storage::storage::Storage;
 
-#[derive(Debug, Error)]
-pub enum FileStorageError {}
+struct FileStorageInner {
+    file: Arc<File>,
+    reader: BufReader<IoArc<File>>,
+    writer: BufWriter<IoArc<File>>,
+}
 
-#[derive(Debug)]
+impl FileStorageInner {
+    pub fn new(file: Arc<File>) -> Self {
+        Self {
+            file: file.clone(),
+            reader: BufReader::new(IoArc::from_arc(file.clone())),
+            writer: BufWriter::new(IoArc::from_arc(file)),
+        }
+    }
+}
+
 pub struct FileStorage {
-    file: Mutex<File>,
+    inner: Mutex<FileStorageInner>,
     path: PathBuf,
 }
 
 impl FileStorage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&path)?;
+        let file = Arc::new(
+            File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&path)?,
+        );
         Ok(Self {
-            file: Mutex::new(file),
+            inner: Mutex::new(FileStorageInner::new(file)),
             path: PathBuf::from(path.as_ref()),
         })
     }
@@ -41,37 +58,38 @@ impl FileStorage {
             .open(&path)?;
         file.write_all(&data).unwrap();
         Ok(Self {
-            file: Mutex::new(file),
+            inner: Mutex::new(FileStorageInner::new(Arc::new(file))),
             path: PathBuf::from(path.as_ref()),
         })
     }
 
     pub fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
-        use std::os::unix::fs::FileExt;
+        
         let mut data = vec![0; len as usize];
-        let mut file = self.file.lock();
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact_at(&mut data[..], offset)?;
+        let mut guard = self.inner.lock();
+        guard.reader.seek(SeekFrom::Start(offset))?;
+        guard.reader.read_exact(&mut data)?;
         Ok(data)
     }
 
     pub fn read_to_end(&self, offset: u64) -> Result<Vec<u8>> {
         let mut buf = vec![];
-        let mut file = self.file.lock();
-        file.seek(SeekFrom::Start(offset))?;
-        file.read_to_end(&mut buf)?;
+        let mut guard = self.inner.lock();
+        guard.reader.seek(SeekFrom::Start(offset))?;
+        guard.reader.read_to_end(&mut buf)?;
         Ok(buf)
     }
 
+    #[instrument(skip_all)]
     pub fn write(&self, data: &[u8]) {
-        let mut file = self.file.lock();
-        file.seek(SeekFrom::End(0)).unwrap();
-        file.write_all(data).unwrap();
+        let mut guard = self.inner.lock();
+        guard.writer.seek(SeekFrom::End(0)).unwrap();
+        guard.writer.write_all(data).unwrap();
     }
 
+    #[instrument(skip_all)]
     pub fn sync(&self) {
-        let file = self.file.lock();
-        file.sync_all().unwrap();
+        self.inner.lock().writer.flush().unwrap();
     }
 
     pub fn rename(&self, new_path: impl AsRef<Path>) -> anyhow::Result<()> {
@@ -87,6 +105,14 @@ impl FileStorage {
     pub fn size(&self) -> anyhow::Result<u64> {
         let metadata = fs::metadata(&self.path)?;
         Ok(metadata.len())
+    }
+}
+
+impl Debug for FileStorage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileStorage")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
