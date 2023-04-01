@@ -185,6 +185,9 @@ impl StorageIterator for VSsTableIterator {
     #[instrument]
     fn next(&mut self) -> Result<()> {
         self.iter.next()?;
-        self.update_kv()
+        if self.iter.is_valid() {
+            self.update_kv()?;
+        }
+        Ok(())
     }
 }

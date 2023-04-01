@@ -11,7 +11,7 @@ fn test_manifest() {
     let items = vec![
         ManifestItem::Init(0),
         ManifestItem::NewSst(0, 1),
-        ManifestItem::RotateWal,
+        ManifestItem::FreezeAndCreateWal(0, 1),
     ];
     {
         let mut m = Manifest::open(path.join("MANIFEST")).unwrap();

@@ -64,7 +64,6 @@ impl FileStorage {
     }
 
     pub fn read(&self, offset: u64, len: u64) -> Result<Vec<u8>> {
-        
         let mut data = vec![0; len as usize];
         let mut guard = self.inner.lock();
         guard.reader.seek(SeekFrom::Start(offset))?;

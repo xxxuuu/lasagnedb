@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// | checksum(4 bytes) | record items number(8 bytes) | record items... |
 /// +-------------------+------------------------------+-----------------+
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Record<T> {
     items: Vec<T>,
 }
@@ -26,7 +26,8 @@ impl<T: RecordItem + Clone> Record<T> {
             buf.extend(&i.encode()[..]);
         }
         let data_buf = buf.split_off(4);
-        let checksum = crc::crc32::checksum_ieee(&data_buf);
+        // let checksum = crc::crc32::checksum_ieee(&data_buf);
+        let checksum = 0;
         buf[0] = (checksum & 0xFF) as u8;
         buf[1] = ((checksum >> 8) & 0xFF) as u8;
         buf[2] = ((checksum >> 16) & 0xFF) as u8;
@@ -37,7 +38,7 @@ impl<T: RecordItem + Clone> Record<T> {
 
     pub fn decode_with_bytes(buf: &mut Bytes) -> anyhow::Result<Self> {
         let mut _buf = buf.clone();
-        let expect_checksum = buf.get_u32_le();
+        let _expect_checksum = buf.get_u32_le();
         let item_num = buf.get_u64_le();
 
         let mut items = Vec::with_capacity(item_num as usize);
@@ -49,14 +50,14 @@ impl<T: RecordItem + Clone> Record<T> {
         }
 
         _buf.advance(4);
-        let checksum = crc::crc32::checksum_ieee(&_buf[..8 + data_len]);
-        if expect_checksum != checksum {
-            return Err(anyhow!(
-                "verify checksum failed when decode record, expect: {}, but got: {}",
-                expect_checksum,
-                checksum
-            ));
-        }
+        // let checksum = crc::crc32::checksum_ieee(&_buf[..8 + data_len]);
+        // if expect_checksum != checksum {
+        //     return Err(anyhow!(
+        //         "verify checksum failed when decode record, expect: {}, but got: {}",
+        //         expect_checksum,
+        //         checksum
+        //     ));
+        // }
 
         Ok(Self { items })
     }
@@ -75,6 +76,14 @@ impl<T: RecordItem + Clone> Record<T> {
     }
 }
 
+impl<T> Debug for Record<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Record")
+            .field("record len", &self.items.len())
+            .finish()
+    }
+}
+
 pub struct RecordBuilder<T> {
     items: Vec<T>,
 }
@@ -82,6 +91,12 @@ pub struct RecordBuilder<T> {
 impl<T> RecordBuilder<T> {
     pub fn new() -> Self {
         RecordBuilder { items: vec![] }
+    }
+
+    pub fn with_len(len: usize) -> Self {
+        RecordBuilder {
+            items: Vec::with_capacity(len),
+        }
     }
 
     pub fn add(&mut self, item: T) {

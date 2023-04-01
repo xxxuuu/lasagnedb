@@ -1,4 +1,5 @@
 use crate::entry::Entry;
+use crate::BLOCK_SIZE;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::mem;
 
@@ -17,7 +18,6 @@ pub struct Block {
     pub(crate) entry_num: u16,
 }
 
-pub const BLOCK_SIZE: usize = 4 * 1024; // 4KB
 const SIZEOF_U16: usize = mem::size_of::<u16>();
 const SIZEOF_U32: usize = mem::size_of::<u32>();
 
@@ -103,7 +103,7 @@ impl BlockBuilder {
         self.offsets.is_empty()
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         // entries + offsets + checksum(4bytes) + entry num(2bytes)
         self.entry_size + self.offsets.len() * SIZEOF_U16 + SIZEOF_U32 + SIZEOF_U16
     }

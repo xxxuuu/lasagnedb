@@ -18,7 +18,7 @@ use crossbeam::channel;
 
 use parking_lot::RwLock;
 
-use tracing::{debug, instrument, span, warn};
+use tracing::{debug, error, instrument, span, trace, warn};
 
 use crate::cache::BlockCache;
 use crate::{Key, OpType, BLOCK_CACHE_SIZE, MEMTABLE_SIZE_LIMIT, SST_LEVEL_LIMIT};
@@ -51,6 +51,7 @@ pub(crate) struct DbInner {
     pub(crate) vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
 
     pub(crate) seq_num: u64,
+    pub(crate) log_id: u32,
     pub(crate) sst_id: u32,
     pub(crate) vsst_id: u32,
 }
@@ -88,8 +89,10 @@ impl Db {
         let _daemon = self.daemon.clone();
         thread::spawn(move || {
             for _ in _flush_rx {
+                let _span = span!(tracing::Level::TRACE, "flush daemon");
+                let _enter = _span.enter();
                 if let Err(err) = _daemon.rotate() {
-                    warn!("rotate failed: {}", err)
+                    error!("rotate failed: {}", err)
                 }
             }
         });
@@ -97,8 +100,10 @@ impl Db {
         let _daemon = self.daemon.clone();
         thread::spawn(move || {
             for level in _compaction_rx {
+                let _span = span!(tracing::Level::TRACE, "compaction daemon");
+                let _enter = _span.enter();
                 if let Err(err) = _daemon.compaction(level) {
-                    warn!("compaction failed: {}", err)
+                    error!("compaction failed: {}", err)
                 }
             }
         });
@@ -112,12 +117,8 @@ impl Db {
         base_path.as_ref().join(format!("{:05}.MANIFEST", id))
     }
 
-    pub(crate) fn path_of_new_wal(base_path: impl AsRef<Path>) -> PathBuf {
-        base_path.as_ref().join("NEW_LOG")
-    }
-
-    pub(crate) fn path_of_wal(base_path: impl AsRef<Path>) -> PathBuf {
-        base_path.as_ref().join("LOG")
+    pub(crate) fn path_of_wal(base_path: impl AsRef<Path>, id: u32) -> PathBuf {
+        base_path.as_ref().join(format!("{:05}.LOG", id))
     }
 
     pub(crate) fn path_of_sst(base_path: impl AsRef<Path>, sst_id: u32) -> PathBuf {
@@ -135,11 +136,14 @@ impl Db {
         sst_cache: Arc<BlockCache>,
         vsst_cache: Arc<BlockCache>,
     ) -> anyhow::Result<(
-        Vec<Vec<Arc<SsTable>>>,
-        u32,
-        HashMap<u32, Arc<SsTable>>,
-        u32,
-        Arc<MemTable>,
+        Vec<Vec<Arc<SsTable>>>,     // levels
+        u32,                        // now_sst_id
+        HashMap<u32, Arc<SsTable>>, // vssts
+        u32,                        // now_vsst_id
+        Arc<MemTable>,              // memtable
+        u32,                        // now_log_id
+        Vec<Arc<Journal>>,          // frozen_wal
+        Vec<Arc<MemTable>>,         // frozen_memtable
     )> {
         // 从 MANIFEST 恢复元信息
         let mut iter = ManifestIterator::create_and_seek_to_first(manifest)?;
@@ -147,11 +151,14 @@ impl Db {
         let mut now_vsst_id = 0;
         let mut sst_map: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut vsst_set: HashSet<u32> = HashSet::new();
+        let mut frozen_log_ids: Vec<u32> = vec![]; // 有顺序要求
+        let mut now_log_id = 0;
         let mut seq_num = 1;
         let iter_manifest_span = span!(tracing::Level::TRACE, "iterate manifest").entered();
         while iter.is_valid() {
             let record_item = iter.record_item();
             match record_item {
+                ManifestItem::Init(_) => {}
                 ManifestItem::NewSst(level, sst_id) => {
                     sst_map.entry(level).or_default().push(sst_id);
                     now_sst_id = if now_sst_id > sst_id {
@@ -177,14 +184,14 @@ impl Db {
                     vsst_set.remove(&sst_id);
                 }
                 ManifestItem::MaxSeqNum(_seq_num) => seq_num = _seq_num,
-                ManifestItem::Init(_) => {}
-                ManifestItem::RotateWal => {
-                    let new_log = Db::path_of_new_wal(&path);
-                    if new_log.exists() {
-                        let old_log = Db::path_of_wal(&path);
-                        old_log.exists().then(|| fs::remove_file(old_log.clone()));
-                        fs::rename(new_log, old_log)?;
+                ManifestItem::FreezeAndCreateWal(old_log_id, new_log_id) => {
+                    now_log_id = new_log_id;
+                    if old_log_id != new_log_id {
+                        frozen_log_ids.push(old_log_id);
                     }
+                }
+                ManifestItem::DelFrozenWal(log_id) => {
+                    frozen_log_ids.retain(|item| item != &log_id);
                 }
             }
             iter.next()?;
@@ -223,7 +230,10 @@ impl Db {
 
         // 重新执行 LOG 操作
         let redo_log_span = span!(tracing::Level::TRACE, "redo log").entered();
-        let wal = Arc::new(Journal::open(Db::path_of_wal(&path))?);
+        let wal = Arc::new(Journal::open(
+            now_log_id,
+            Db::path_of_wal(&path, now_log_id),
+        )?);
         let memtable = Arc::new(MemTable::new());
         if wal.num_of_records() > 0 {
             let mut wal_iter = JournalIterator::create_and_seek_to_first(wal)?;
@@ -236,9 +246,39 @@ impl Db {
                 wal_iter.next()?;
             }
         }
+        let mut frozen_wal = vec![];
+        let mut frozen_memtable = vec![];
+        for id in frozen_log_ids {
+            let _wal = Arc::new(Journal::open(id, Db::path_of_wal(&path, id))?);
+            let _memtable = Arc::new(MemTable::new());
+
+            if _wal.num_of_records() > 0 {
+                let mut wal_iter = JournalIterator::create_and_seek_to_first(_wal.clone())?;
+                while wal_iter.is_valid() {
+                    let wal_item = wal_iter.record_item();
+                    let entry = wal_item.as_ref();
+                    let op_code = OpType::from((entry.meta & 0xFF) as u8);
+                    let key = Db::make_internal_key(1, op_code, &entry.key);
+                    _memtable.put(key, entry.value.clone());
+                    wal_iter.next()?;
+                }
+            }
+
+            frozen_wal.push(_wal);
+            frozen_memtable.push(_memtable);
+        }
         drop(redo_log_span);
 
-        Ok((levels, now_sst_id, vssts, now_vsst_id, memtable))
+        Ok((
+            levels,
+            now_sst_id,
+            vssts,
+            now_vsst_id,
+            memtable,
+            now_log_id,
+            frozen_wal,
+            frozen_memtable,
+        ))
     }
 
     #[instrument]
@@ -250,8 +290,11 @@ impl Db {
         levels.resize(SST_LEVEL_LIMIT as usize, vec![]);
         let mut vssts: HashMap<u32, Arc<SsTable>> = HashMap::new();
         let mut memtable = Arc::new(MemTable::new());
+        let mut frozen_wal = vec![];
+        let mut frozen_memtable = vec![];
         let mut sst_id = 0;
         let mut vsst_id = 0;
+        let mut log_id = 0;
         let sst_cache = Arc::new(BlockCache::new(BLOCK_CACHE_SIZE));
         let vsst_cache = Arc::new(BlockCache::new(BLOCK_CACHE_SIZE));
 
@@ -270,7 +313,16 @@ impl Db {
                 let recover_res =
                     Db::recover(&path, manifest, sst_cache.clone(), vsst_cache.clone())?;
                 debug!("recover result: {:?}", recover_res);
-                (levels, sst_id, vssts, vsst_id, memtable) = recover_res;
+                (
+                    levels,
+                    sst_id,
+                    vssts,
+                    vsst_id,
+                    memtable,
+                    log_id,
+                    frozen_wal,
+                    frozen_memtable,
+                ) = recover_res;
             }
         }
 
@@ -279,6 +331,7 @@ impl Db {
         let mut manifest = Manifest::open(manifest_path.as_path())?;
         let mut r = RecordBuilder::new();
         r.add(ManifestItem::Init(version as i32 + 1));
+        r.add(ManifestItem::FreezeAndCreateWal(log_id, log_id));
         for (_level, _ssts) in levels.iter().enumerate() {
             for sst in _ssts {
                 r.add(ManifestItem::NewSst(_level as u32, sst.id()));
@@ -298,17 +351,19 @@ impl Db {
         current.write(manifest_path.file_name().unwrap().as_bytes())?;
 
         // 构建Db
-        let flush_chan = channel::unbounded();
+        let flush_chan = channel::bounded(1);
         let compaction_chan = channel::unbounded();
         let exit_chan = channel::bounded(1);
         let inner = Arc::new(RwLock::new(Arc::new(DbInner {
-            wal: Arc::new(Journal::open(Db::path_of_wal(&path))?),
-            frozen_wal: vec![],
+            wal: Arc::new(Journal::open(log_id, Db::path_of_wal(&path, log_id))?),
+            frozen_wal,
             memtable,
-            frozen_memtable: vec![],
+            frozen_memtable,
             levels,
             vssts: Arc::new(RwLock::new(vssts)),
             seq_num: 1,
+
+            log_id,
             sst_id,
             vsst_id,
         })));
@@ -409,6 +464,8 @@ impl Db {
             None => (Bytes::new(), Delete),
             Some(v) => (v, Put),
         };
+        trace!("key size: {}, value size: {}", key.len(), value.len());
+
         let mut entry_builder = EntryBuilder::new();
         entry_builder
             .op_type(op_type)
@@ -425,8 +482,8 @@ impl Db {
         guard.memtable.put(internal_key, value);
 
         if guard.memtable.size() > MEMTABLE_SIZE_LIMIT {
-            if let Err(e) = self.flush_chan.0.send(()) {
-                eprintln!("{}", e);
+            if let Err(e) = self.flush_chan.0.try_send(()) {
+                warn!("{}", e);
             }
         }
 

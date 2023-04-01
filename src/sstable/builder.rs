@@ -86,8 +86,8 @@ impl SsTable {
         })
     }
 
-    pub fn size(&self) -> anyhow::Result<u64> {
-        self.file.size()
+    pub fn size(&self) -> u64 {
+        self.file.size().map_or(0, |size| size)
     }
 
     pub fn id(&self) -> u32 {
@@ -95,6 +95,7 @@ impl SsTable {
     }
 
     pub fn delete(&self) -> anyhow::Result<()> {
+        // TODO: reference count
         self.file.delete()
     }
 
@@ -116,7 +117,7 @@ impl SsTable {
         }
         let (min_key, max_key) = self.key_range();
         let (other_min_key, other_max_key) = other.key_range();
-        max_key < other_min_key || other_max_key < min_key
+        !(max_key < other_min_key || other_max_key < min_key)
     }
 
     pub fn key_range(&self) -> (Bytes, Bytes) {
@@ -209,6 +210,14 @@ impl SsTableBuilder {
         self.data.extend(encoded_block);
     }
 
+    // 数据大小（预估值）
+    pub fn size(&self) -> usize {
+        self.builder.size()
+            + self.data.len()
+            + self.meta.len() * (self.first_key.len() + self.last_key.len())
+    }
+
+    // 块数量
     pub fn len(&self) -> usize {
         self.meta.len()
     }

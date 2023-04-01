@@ -7,8 +7,9 @@ use crate::sstable::builder::SsTableBuilder;
 use crate::wal::Journal;
 use crate::{Db, L0_SST_NUM_LIMIT, MEMTABLE_SIZE_LIMIT, MIN_VSST_SIZE};
 use bytes::{BufMut, BytesMut};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tracing::instrument;
+use tracing::{debug, info, instrument, span, trace, warn};
 
 impl DbDaemon {
     #[instrument]
@@ -24,6 +25,7 @@ impl DbDaemon {
             return Ok(());
         }
 
+        self.rotate_count.fetch_add(1, Ordering::Release);
         let flush_memtable;
         let sst_id: u32;
         let vsst_id: u32;
@@ -33,9 +35,13 @@ impl DbDaemon {
             let mut guard = self.inner.write();
             let mut snapshot = guard.as_ref().clone();
             let old_memtable = std::mem::replace(&mut snapshot.memtable, Arc::new(MemTable::new()));
+            let new_log_id = snapshot.log_id + 1;
             let old_wal = std::mem::replace(
                 &mut snapshot.wal,
-                Arc::new(Journal::open(Db::path_of_new_wal(self.path.as_ref()))?),
+                Arc::new(Journal::open(
+                    new_log_id,
+                    Db::path_of_wal(self.path.as_ref(), new_log_id),
+                )?),
             );
 
             flush_memtable = old_memtable.clone();
@@ -43,8 +49,14 @@ impl DbDaemon {
             vsst_id = snapshot.vsst_id + 1;
             snapshot.sst_id = sst_id;
             snapshot.vsst_id = vsst_id;
+            snapshot.log_id = new_log_id;
             snapshot.frozen_memtable.push(old_memtable);
-            snapshot.frozen_wal.push(old_wal);
+            snapshot.frozen_wal.push(old_wal.clone());
+
+            let mut builder = RecordBuilder::new();
+            builder.add(ManifestItem::FreezeAndCreateWal(old_wal.id(), new_log_id));
+            self.manifest.write().add(&builder.build());
+
             *guard = Arc::new(snapshot);
         }
 
@@ -83,7 +95,7 @@ impl DbDaemon {
             Db::path_of_sst(self.path.as_ref(), sst_id),
         )?);
         let mut vsst = None;
-        let kv_separate = vsst_builder.len() > 0;
+        let kv_separate = vsst_builder.size() > 0;
         if kv_separate {
             vsst = Some(Arc::new(vsst_builder.build(
                 vsst_id,
@@ -111,13 +123,14 @@ impl DbDaemon {
                 r.add(ManifestItem::NewVSst(vsst_id))
             }
             r.add(ManifestItem::MaxSeqNum(snapshot.seq_num));
-            r.add(ManifestItem::RotateWal);
+            if let Some(old_wal) = &_old_wal {
+                r.add(ManifestItem::DelFrozenWal(old_wal.id()));
+            }
             manifest.add(&r.build());
 
             if let Some(old_wal) = _old_wal {
-                old_wal.delete();
+                old_wal.delete()?;
             }
-            snapshot.wal.rename(Db::path_of_wal(self.path.as_ref()))?;
 
             let l0_compaction = snapshot.levels[0].len() > L0_SST_NUM_LIMIT;
 
@@ -125,7 +138,9 @@ impl DbDaemon {
 
             // L0 SST 数量过多，触发合并
             if l0_compaction {
-                self.compaction_chan.0.send(0)?;
+                if let Err(e) = self.compaction_chan.0.try_send(0) {
+                    warn!("send compaction message failed {}", e);
+                }
             }
         }
 

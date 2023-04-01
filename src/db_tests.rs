@@ -1,10 +1,11 @@
 use std::io::Read;
 use std::ops::Bound::Unbounded;
-use std::sync::Once;
-use std::thread;
+use std::sync::{Arc, Once};
+use std::thread::{self, Thread};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use tracing::{debug, info, instrument, span};
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
@@ -122,6 +123,42 @@ fn test_rotate() {
     thread::sleep(Duration::from_secs(2));
     db.print_debug_info();
     assert_eq!(db.inner.read().levels[0].len(), 1);
+}
+
+#[test]
+fn test_background_write() {
+    INIT.call_once(setup);
+    let data_dir = tempfile::tempdir().unwrap();
+
+    let db = Arc::new(Db::open_file(data_dir.path()).unwrap());
+    let _db = db.clone();
+    thread::spawn(move || loop {
+        let k1 = Bytes::from("k1");
+        let v1 = BytesMut::zeroed(MEMTABLE_SIZE_LIMIT / 40).freeze();
+
+        _db.put(k1.clone(), v1.clone()).unwrap();
+        thread::sleep(Duration::from_millis(100));
+    });
+
+    for i in 1..60 {
+        {
+            let snapshot = {
+                let guard = db.inner.read();
+                guard.as_ref().clone()
+            };
+            let _span = span!(tracing::Level::TRACE, "test background write");
+            let _enter = _span.enter();
+            debug!("{} sec", i);
+            debug!("MEM SIZE: {}KB", snapshot.memtable.size() / 1024);
+            debug!("FROZEN MEM: {}", snapshot.frozen_memtable.len());
+            debug!("FROZEN LOG: {}", snapshot.frozen_wal.len());
+            debug!("L0 SST: {}", snapshot.levels[0].len());
+            debug!("L1 SST: {}", snapshot.levels[1].len());
+            debug!("VSST: {}", snapshot.vssts.read().len());
+            drop(_enter);
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
 }
 
 #[test]

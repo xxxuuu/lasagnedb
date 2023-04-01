@@ -41,6 +41,7 @@ fn test_merge_iterator() {
     let iter2 = TestIterator::new(vec![
         (b"k1".to_vec(), b"v1_1".to_vec()),
         (b"k2".to_vec(), b"v2".to_vec()),
+        (b"k4".to_vec(), b"v4".to_vec()),
     ]);
 
     let mut i = MergeIterator::create(vec![Box::new(iter1), Box::new(iter2)]);
@@ -53,6 +54,10 @@ fn test_merge_iterator() {
     assert_eq!(i.key(), b"k3");
     assert_eq!(i.value(), b"v3");
     i.next().unwrap();
+    assert_eq!(i.key(), b"k4");
+    assert_eq!(i.value(), b"v4");
+    i.next().unwrap();
+    assert!(!i.is_valid())
 }
 
 #[test]

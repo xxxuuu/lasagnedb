@@ -36,7 +36,7 @@ impl Entry {
     }
 
     pub fn value_separate(&self) -> bool {
-        (self.meta >> 8) | 0x1 == 0x1
+        (self.meta >> 8) & 0x1 == 0x1
     }
 
     pub fn encode(&self) -> Bytes {
@@ -179,6 +179,6 @@ pub mod tests {
             .key_value(key, value)
             .build();
 
-        assert_eq!(b.has_value(), false);
+        assert!(!b.has_value());
     }
 }

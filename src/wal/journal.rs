@@ -12,13 +12,14 @@ use crate::record::{Record, RecordBuilder, RecordItem};
 use crate::storage::file::FileStorage;
 
 pub struct Journal {
+    id: u32,
     file: FileStorage,
     records: Vec<Arc<Record<JournalItem>>>,
 }
 
 impl Journal {
     #[instrument]
-    pub fn open(path: impl AsRef<Path> + Debug) -> anyhow::Result<Self> {
+    pub fn open(id: u32, path: impl AsRef<Path> + Debug) -> anyhow::Result<Self> {
         // TODO 优化
         let file = FileStorage::open(path)?;
         let mut records = vec![];
@@ -28,15 +29,15 @@ impl Journal {
             records.push(Arc::new(Record::decode_with_bytes(&mut buf)?));
         }
 
-        Ok(Self { file, records })
+        Ok(Self { id, file, records })
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
     }
 
     pub fn num_of_records(&self) -> usize {
         self.records.len()
-    }
-
-    pub fn rename(&self, new_path: impl AsRef<Path>) -> anyhow::Result<()> {
-        self.file.rename(new_path)
     }
 
     pub fn delete(&self) -> anyhow::Result<()> {
@@ -45,7 +46,7 @@ impl Journal {
 
     #[instrument(skip_all)]
     pub fn write(&self, batches: Vec<Entry>) -> anyhow::Result<()> {
-        let mut builder = RecordBuilder::new();
+        let mut builder = RecordBuilder::with_len(batches.len());
         for i in batches {
             builder.add(JournalItem(i));
         }

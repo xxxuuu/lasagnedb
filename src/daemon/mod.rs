@@ -4,6 +4,7 @@ use crate::meta::manifest::Manifest;
 use crossbeam::channel;
 use parking_lot::RwLock;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 mod compaction;
@@ -23,6 +24,9 @@ pub(crate) struct DbDaemon {
     flush_chan: (channel::Sender<()>, channel::Receiver<()>),
     compaction_chan: (channel::Sender<u32>, channel::Receiver<u32>),
     exit_chan: (channel::Sender<()>, channel::Receiver<()>),
+
+    compaction_count: AtomicU64,
+    rotate_count: AtomicU64,
 }
 
 impl DbDaemon {
@@ -47,6 +51,9 @@ impl DbDaemon {
             flush_chan,
             compaction_chan,
             exit_chan,
+
+            compaction_count: AtomicU64::new(0),
+            rotate_count: AtomicU64::new(0),
         }
     }
 }

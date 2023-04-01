@@ -27,12 +27,12 @@ fn test_journal() {
     let (batch1, batch2) = (test_batches(), test_batches());
     let file_path = tempfile::tempdir().unwrap().into_path().join("LOG");
     {
-        let wal = Journal::open(file_path.clone()).unwrap();
+        let wal = Journal::open(1, file_path.clone()).unwrap();
         wal.write(batch1.clone()).unwrap();
         wal.write(batch2.clone()).unwrap();
     }
 
-    let wal = Arc::new(Journal::open(file_path).unwrap());
+    let wal = Arc::new(Journal::open(1, file_path).unwrap());
     let mut iter = JournalIterator::create_and_seek_to_first(wal).unwrap();
     let mut batches = batch1;
     batches.extend(batch2);

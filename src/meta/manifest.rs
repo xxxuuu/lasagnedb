@@ -74,8 +74,13 @@ pub enum ManifestItem {
     DelVSst(u32),
     /// 更新最大 seq num
     MaxSeqNum(u64),
-    /// 新旧 WAL 切换
-    RotateWal,
+    /// 冻结旧 WAL 并创建新 WAL
+    /// (old_log_id, new_log_id)
+    ///
+    /// old_log_id == new_log_id 时是创建（第一个WAL)
+    FreezeAndCreateWal(u32, u32),
+    /// 删除冻结 WAL
+    DelFrozenWal(u32),
 }
 
 impl ManifestItem {
@@ -93,7 +98,8 @@ impl ManifestItem {
             ManifestItem::NewVSst(_) => 3,
             ManifestItem::DelVSst(_) => 4,
             ManifestItem::MaxSeqNum(_) => 5,
-            ManifestItem::RotateWal => 6,
+            ManifestItem::FreezeAndCreateWal(_, _) => 6,
+            ManifestItem::DelFrozenWal(_) => 7,
         }
     }
 
@@ -113,9 +119,13 @@ impl ManifestItem {
             ManifestItem::Init(version) => {
                 buf.put_i32_le(*version);
             }
-            ManifestItem::RotateWal => {}
             ManifestItem::NewVSst(vsst_id) => buf.put_u32_le(*vsst_id),
             ManifestItem::DelVSst(vsst_id) => buf.put_u32_le(*vsst_id),
+            ManifestItem::FreezeAndCreateWal(old_log_id, new_log_id) => {
+                buf.put_u32_le(*old_log_id);
+                buf.put_u32_le(*new_log_id);
+            }
+            ManifestItem::DelFrozenWal(log_id) => buf.put_u32_le(*log_id),
         }
     }
 
@@ -128,7 +138,8 @@ impl ManifestItem {
             ManifestItem::DelVSst(_) => mem::size_of::<u32>(),
             ManifestItem::MaxSeqNum(_) => mem::size_of::<u64>(),
             ManifestItem::Init(_) => mem::size_of::<i32>(),
-            ManifestItem::RotateWal => 0,
+            ManifestItem::FreezeAndCreateWal(_, _) => mem::size_of::<u32>() * 2,
+            ManifestItem::DelFrozenWal(_) => mem::size_of::<u32>(),
         }
     }
 }
@@ -172,7 +183,15 @@ impl RecordItem for ManifestItem {
                 let seq_num = bytes.get_u64_le();
                 Ok(ManifestItem::MaxSeqNum(seq_num))
             }
-            6 => Ok(ManifestItem::RotateWal),
+            6 => {
+                let old_log_id = bytes.get_u32_le();
+                let new_log_id = bytes.get_u32_le();
+                Ok(ManifestItem::FreezeAndCreateWal(old_log_id, new_log_id))
+            }
+            7 => {
+                let log_id = bytes.get_u32_le();
+                Ok(ManifestItem::DelFrozenWal(log_id))
+            }
             _ => Err(anyhow!("unsupported record item type: {}", item_type)),
         }
     }
