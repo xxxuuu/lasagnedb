@@ -49,6 +49,10 @@ impl DbIterator {
 }
 
 impl StorageIterator for DbIterator {
+    fn meta(&self) -> &[u8] {
+        self.iter.meta()
+    }
+
     fn key(&self) -> &[u8] {
         self.iter.key()
     }
@@ -79,6 +83,10 @@ impl<I: StorageIterator> FusedIterator<I> {
 }
 
 impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
+    fn meta(&self) -> &[u8] {
+        self.iter.meta()
+    }
+
     fn key(&self) -> &[u8] {
         self.iter.key()
     }

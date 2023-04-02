@@ -43,6 +43,14 @@ impl<A: StorageIterator, B: StorageIterator> TwoMergeIterator<A, B> {
 }
 
 impl<A: StorageIterator, B: StorageIterator> StorageIterator for TwoMergeIterator<A, B> {
+    fn meta(&self) -> &[u8] {
+        if self.choose_a {
+            self.a.meta()
+        } else {
+            self.b.meta()
+        }
+    }
+
     fn key(&self) -> &[u8] {
         if self.choose_a {
             self.a.key()

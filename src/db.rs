@@ -49,6 +49,7 @@ pub(crate) struct DbInner {
 
     pub(crate) levels: Vec<Vec<Arc<SsTable>>>,
     pub(crate) vssts: Arc<RwLock<HashMap<u32, Arc<SsTable>>>>,
+    pub(crate) vsst_rc: Arc<RwLock<HashMap<u32, u32>>>,
 
     pub(crate) seq_num: u64,
     pub(crate) log_id: u32,
@@ -129,6 +130,7 @@ impl Db {
         base_path.as_ref().join(format!("{:05}.VSST", vsst_id))
     }
 
+    // TODO 太恶心了 这块要重构
     #[instrument]
     pub fn recover(
         path: impl AsRef<Path> + Debug,
@@ -144,6 +146,7 @@ impl Db {
         u32,                        // now_log_id
         Vec<Arc<Journal>>,          // frozen_wal
         Vec<Arc<MemTable>>,         // frozen_memtable
+        HashMap<u32, u32>,          // vsst_rc
     )> {
         // 从 MANIFEST 恢复元信息
         let mut iter = ManifestIterator::create_and_seek_to_first(manifest)?;
@@ -151,6 +154,7 @@ impl Db {
         let mut now_vsst_id = 0;
         let mut sst_map: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut vsst_set: HashSet<u32> = HashSet::new();
+        let mut vsst_rc: HashMap<u32, u32> = HashMap::new();
         let mut frozen_log_ids: Vec<u32> = vec![]; // 有顺序要求
         let mut now_log_id = 0;
         let mut seq_num = 1;
@@ -192,6 +196,13 @@ impl Db {
                 }
                 ManifestItem::DelFrozenWal(log_id) => {
                     frozen_log_ids.retain(|item| item != &log_id);
+                }
+                ManifestItem::VSstRefCnt(vsst_id, cnt) => {
+                    if cnt == 0 {
+                        vsst_rc.remove(&vsst_id);
+                    } else {
+                        vsst_rc.insert(vsst_id, cnt);
+                    }
                 }
             }
             iter.next()?;
@@ -278,6 +289,7 @@ impl Db {
             now_log_id,
             frozen_wal,
             frozen_memtable,
+            vsst_rc,
         ))
     }
 
@@ -289,6 +301,7 @@ impl Db {
         let mut levels: Vec<Vec<Arc<SsTable>>> = vec![];
         levels.resize(SST_LEVEL_LIMIT as usize, vec![]);
         let mut vssts: HashMap<u32, Arc<SsTable>> = HashMap::new();
+        let mut vsst_rc: HashMap<u32, u32> = HashMap::new();
         let mut memtable = Arc::new(MemTable::new());
         let mut frozen_wal = vec![];
         let mut frozen_memtable = vec![];
@@ -322,6 +335,7 @@ impl Db {
                     log_id,
                     frozen_wal,
                     frozen_memtable,
+                    vsst_rc,
                 ) = recover_res;
             }
         }
@@ -361,6 +375,7 @@ impl Db {
             frozen_memtable,
             levels,
             vssts: Arc::new(RwLock::new(vssts)),
+            vsst_rc: Arc::new(RwLock::new(vsst_rc)),
             seq_num: 1,
 
             log_id,

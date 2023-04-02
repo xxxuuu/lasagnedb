@@ -18,4 +18,6 @@ pub const MAX_LEVEL_SIZE: [u64; SST_LEVEL_LIMIT as usize] = [
     100 * GB as u64,
 ];
 
+pub const MAX_VSST_SPARE_RATIO: f32 = 0.5;
+
 pub const L0_SST_NUM_LIMIT: usize = 4;

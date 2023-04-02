@@ -75,10 +75,7 @@ impl DbDaemon {
                     .kv_separate(true)
                     .key_value(user_key.clone(), _sst_value.freeze())
                     .build();
-                let vsst_entry = EntryBuilder::new()
-                    .op_type(_key.op_type)
-                    .key_value(user_key, value)
-                    .build();
+                let vsst_entry = EntryBuilder::new().key_value(user_key, value).build();
                 sst_builder.add(&sst_entry);
                 vsst_builder.add(&vsst_entry);
             } else {
@@ -111,16 +108,23 @@ impl DbDaemon {
             let mut _old_wal = snapshot.frozen_wal.pop();
             snapshot.frozen_memtable.pop();
             snapshot.levels[0].push(sst);
+            let mut vsst_pair_count = 0;
             if let Some(_vsst) = vsst {
+                vsst_pair_count = _vsst.num_of_pairs() as u32;
+                snapshot.vsst_rc.write().insert(vsst_id, vsst_pair_count);
                 snapshot.vssts.write().insert(vsst_id, _vsst);
             }
 
             // 更新元数据
             let mut manifest = self.manifest.write();
             let mut r = RecordBuilder::new();
-            r.add(ManifestItem::NewSst(0, sst_id));
+            let level = 0;
+            r.add(ManifestItem::NewSst(level, sst_id));
+            info!("NEW L{} {}.SST", level, sst_id);
             if kv_separate {
-                r.add(ManifestItem::NewVSst(vsst_id))
+                r.add(ManifestItem::NewVSst(vsst_id));
+                r.add(ManifestItem::VSstRefCnt(vsst_id, vsst_pair_count));
+                info!("NEW {}.VSST", vsst_id);
             }
             r.add(ManifestItem::MaxSeqNum(snapshot.seq_num));
             if let Some(old_wal) = &_old_wal {

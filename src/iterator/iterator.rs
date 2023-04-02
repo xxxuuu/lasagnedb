@@ -8,6 +8,8 @@ pub enum StorageIteratorError {
 }
 
 pub trait StorageIterator {
+    fn meta(&self) -> &[u8];
+
     /// Get the current key.
     fn key(&self) -> &[u8];
 

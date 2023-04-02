@@ -81,6 +81,8 @@ pub enum ManifestItem {
     FreezeAndCreateWal(u32, u32),
     /// 删除冻结 WAL
     DelFrozenWal(u32),
+    /// VSST 引用计数 (vsst_id, referenced_cnt)
+    VSstRefCnt(u32, u32),
 }
 
 impl ManifestItem {
@@ -100,6 +102,7 @@ impl ManifestItem {
             ManifestItem::MaxSeqNum(_) => 5,
             ManifestItem::FreezeAndCreateWal(_, _) => 6,
             ManifestItem::DelFrozenWal(_) => 7,
+            ManifestItem::VSstRefCnt(_, _) => 8,
         }
     }
 
@@ -126,6 +129,10 @@ impl ManifestItem {
                 buf.put_u32_le(*new_log_id);
             }
             ManifestItem::DelFrozenWal(log_id) => buf.put_u32_le(*log_id),
+            ManifestItem::VSstRefCnt(vsst_id, cnt) => {
+                buf.put_u32_le(*vsst_id);
+                buf.put_u32_le(*cnt);
+            }
         }
     }
 
@@ -140,6 +147,7 @@ impl ManifestItem {
             ManifestItem::Init(_) => mem::size_of::<i32>(),
             ManifestItem::FreezeAndCreateWal(_, _) => mem::size_of::<u32>() * 2,
             ManifestItem::DelFrozenWal(_) => mem::size_of::<u32>(),
+            ManifestItem::VSstRefCnt(_, _) => mem::size_of::<u32>() * 2,
         }
     }
 }
@@ -191,6 +199,11 @@ impl RecordItem for ManifestItem {
             7 => {
                 let log_id = bytes.get_u32_le();
                 Ok(ManifestItem::DelFrozenWal(log_id))
+            }
+            8 => {
+                let vsst_id = bytes.get_u32_le();
+                let cnt = bytes.get_u32_le();
+                Ok(ManifestItem::VSstRefCnt(vsst_id, cnt))
             }
             _ => Err(anyhow!("unsupported record item type: {}", item_type)),
         }

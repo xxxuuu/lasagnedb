@@ -5,7 +5,7 @@ use std::collections::BinaryHeap;
 
 use super::StorageIterator;
 
-struct HeapWrapper<I: StorageIterator>(pub usize, pub Box<I>);
+pub(crate) struct HeapWrapper<I: StorageIterator>(pub usize, pub Box<I>);
 
 impl<I: StorageIterator> PartialEq for HeapWrapper<I> {
     fn eq(&self, other: &Self) -> bool {
@@ -35,8 +35,8 @@ impl<I: StorageIterator> Ord for HeapWrapper<I> {
 /// Merge multiple iterators of the same type. If the same key occurs multiple times in some
 /// iterators, prefer the one with smaller index.
 pub struct MergeIterator<I: StorageIterator> {
-    iters: BinaryHeap<HeapWrapper<I>>,
-    current: Option<HeapWrapper<I>>,
+    pub(crate) iters: BinaryHeap<HeapWrapper<I>>,
+    pub(crate) current: Option<HeapWrapper<I>>,
 }
 
 impl<I: StorageIterator> MergeIterator<I> {
@@ -74,6 +74,10 @@ impl<I: StorageIterator> MergeIterator<I> {
 }
 
 impl<I: StorageIterator> StorageIterator for MergeIterator<I> {
+    fn meta(&self) -> &[u8] {
+        unsafe { self.current.as_ref().unwrap_unchecked() }.1.meta()
+    }
+
     fn key(&self) -> &[u8] {
         unsafe { self.current.as_ref().unwrap_unchecked() }.1.key()
     }

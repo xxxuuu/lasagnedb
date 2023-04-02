@@ -5,6 +5,7 @@ use crate::sstable::iterator::SsTableIterator;
 use crate::{OpType, StorageIterator};
 use bytes::Bytes;
 use lazy_static::lazy_static;
+use moka::sync::Cache;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::env::join_paths;
@@ -80,15 +81,21 @@ fn test_merge() {
     levels.push(generate_rang_sst(base_path, 2, 3, 4));
     levels.push(generate_rang_sst(base_path, 3, 1, 2));
 
-    let mut new_ssts = DbDaemon::merge(levels, vsst.clone()).unwrap();
+    let temp_cache = Arc::new(Cache::new(0));
+    let (mut new_ssts, _, _) = DbDaemon::merge(
+        base_path,
+        1,
+        levels,
+        temp_cache.clone(),
+        1,
+        vsst.clone(),
+        temp_cache.clone(),
+        Arc::new(RwLock::new(HashMap::default())),
+    )
+    .unwrap();
     assert_eq!(new_ssts.len(), 1);
-    let new_sst = Arc::new(
-        new_ssts
-            .remove(0)
-            .build(10, None, base_path.join(format!("{}.sst", 10)))
-            .unwrap(),
-    );
-    let mut iter = SsTableIterator::create_and_seek_to_first(new_sst.clone()).unwrap();
+    let sst = new_ssts.remove(0);
+    let mut iter = SsTableIterator::create_and_seek_to_first(sst).unwrap();
     for i in 1..=5 {
         assert_eq!(iter.key(), Bytes::from(map_to_string(i)));
         iter.next().unwrap();

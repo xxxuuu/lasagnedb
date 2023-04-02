@@ -23,6 +23,11 @@ impl Entry {
         Entry { meta, key, value }
     }
 
+    pub fn is_separate(meta: &[u8]) -> bool {
+        let meta = (&meta[..]).get_u32_le();
+        (meta >> 8) & 0x1 == 0x1
+    }
+
     pub fn size(&self) -> usize {
         4 + 8 + 8 + self.key.len() + self.value.len()
     }

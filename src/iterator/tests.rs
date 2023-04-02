@@ -14,6 +14,10 @@ impl TestIterator {
 }
 
 impl StorageIterator for TestIterator {
+    fn meta(&self) -> &[u8] {
+        unimplemented!()
+    }
+
     fn key(&self) -> &[u8] {
         self.data[self.idx].0.as_slice()
     }

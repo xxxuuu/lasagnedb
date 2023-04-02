@@ -6,7 +6,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct BlockIterator {
     block: Arc<Block>,
-    meta: u32,
+    meta: Vec<u8>,
     entry: Entry,
     valid: bool,
     idx: usize,
@@ -16,7 +16,7 @@ impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
         Self {
             block,
-            meta: 0,
+            meta: vec![],
             entry: EntryBuilder::empty(),
             valid: false,
             idx: 0,
@@ -44,9 +44,9 @@ impl BlockIterator {
     }
 
     /// Returns meta info of the current entry.
-    pub fn meta(&self) -> u32 {
+    pub fn meta(&self) -> &[u8] {
         debug_assert!(self.valid, "invalid iterator");
-        self.entry.meta
+        &self.meta[..]
     }
 
     /// Returns the key of the current entry.
@@ -92,6 +92,7 @@ impl BlockIterator {
     fn seek_to_offset(&mut self, offset: usize) {
         let entry = Entry::decode(&self.block.data[offset..]);
         self.entry = entry;
+        self.meta = self.entry.meta.to_le_bytes().to_vec();
         self.valid = true;
     }
 

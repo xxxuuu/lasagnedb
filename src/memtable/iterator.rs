@@ -42,6 +42,10 @@ impl MemTableIterator {
 }
 
 impl StorageIterator for MemTableIterator {
+    fn meta(&self) -> &[u8] {
+        unimplemented!()
+    }
+
     fn key(&self) -> &[u8] {
         &self.borrow_item().0[..]
     }

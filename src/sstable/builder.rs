@@ -21,13 +21,13 @@ use crate::storage::file::FileStorage;
 /// | ...                    |
 /// +------------------------+
 /// | data block             |
-/// +------------------------+
+/// +------------------------+ <--- meta offset
 /// | meta block             |
 /// +------------------------+
 /// | ...                    |
 /// +------------------------+
 /// | meta block             |
-/// +------------------------+
+/// +------------------------+ <--- filter offset
 /// | bloom filter           |
 /// +------------------------+
 /// | filter len(4 bytes)    |
@@ -35,6 +35,8 @@ use crate::storage::file::FileStorage;
 /// | filter offset(4 bytes) |
 /// +------------------------+
 /// | meta offset(4 bytes)   |
+/// +------------------------+
+/// | pair nums(4 bytes)     |
 /// +------------------------+
 /// ```
 #[derive(Debug)]
@@ -45,6 +47,7 @@ pub struct SsTable {
     meta_offset: u32,
     cache: Option<Arc<BlockCache>>,
     bloom: Option<Arc<Bloom<Bytes>>>,
+    pair_num: u32,
 }
 
 impl SsTable {
@@ -56,14 +59,15 @@ impl SsTable {
     ) -> Result<Self> {
         let file = _file;
         let len = file.size()?;
-        let meta_offset = (&file.read(len - 4, 4)?[..]).get_u32_le();
-        let filter_offset = (&file.read(len - 8, 4)?[..]).get_u32_le();
-        let filter_len = (&file.read(len - 12, 4)?[..]).get_u32_le();
+        let pair_num = (&file.read(len - 4, 4)?[..]).get_u32_le();
+        let meta_offset = (&file.read(len - 8, 4)?[..]).get_u32_le();
+        let filter_offset = (&file.read(len - 12, 4)?[..]).get_u32_le();
+        let filter_len = (&file.read(len - 16, 4)?[..]).get_u32_le();
 
         let mut metas = vec![];
         let mut buf = Bytes::from(file.read(
             meta_offset as u64,
-            len - 12 - filter_len as u64 - meta_offset as u64,
+            len - 16 - filter_len as u64 - meta_offset as u64,
         )?);
         while buf.has_remaining() {
             metas.push(MetaBlock::decode_with_bytes(&mut buf));
@@ -83,6 +87,7 @@ impl SsTable {
             meta_offset,
             cache: _block_cache,
             bloom,
+            pair_num,
         })
     }
 
@@ -101,6 +106,10 @@ impl SsTable {
 
     pub fn num_of_blocks(&self) -> usize {
         self.metas.len()
+    }
+
+    pub fn num_of_pairs(&self) -> usize {
+        self.pair_num as usize
     }
 
     /// 指定 key 是否存在于 SST，基于 bloom filter，返回 true 则可能存在，false 则一定不存在
@@ -166,6 +175,7 @@ pub struct SsTableBuilder {
     meta: Vec<MetaBlock>,
     data: Vec<u8>,
     bloom: Bloom<Bytes>,
+    cnt: u32,
 }
 
 impl SsTableBuilder {
@@ -177,11 +187,13 @@ impl SsTableBuilder {
             meta: Vec::new(),
             data: Vec::new(),
             bloom: Bloom::new(20, 1000),
+            cnt: 0,
         }
     }
 
     pub fn add(&mut self, e: &Entry) {
         self.bloom.set(&e.key);
+        self.cnt += 1;
 
         if self.first_key.is_empty() {
             self.first_key = e.key.to_vec();
@@ -243,6 +255,7 @@ impl SsTableBuilder {
         self.data.put_u32_le(filter_offset);
 
         self.data.put_u32_le(meta_offset);
+        self.data.put_u32_le(self.cnt);
 
         let file = FileStorage::create(path, self.data.clone())?;
         Ok(SsTable {
@@ -252,6 +265,7 @@ impl SsTableBuilder {
             meta_offset,
             cache: block_cache,
             bloom: Some(Arc::new(self.bloom)),
+            pair_num: self.cnt,
         })
     }
 }

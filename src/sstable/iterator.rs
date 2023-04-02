@@ -73,14 +73,13 @@ impl SsTableIterator {
         self.block_idx = block_idx;
         Ok(())
     }
-
-    /// Get the current `Entry` meta.
-    fn meta(&self) -> u32 {
-        self.block_iter.meta()
-    }
 }
 
 impl StorageIterator for SsTableIterator {
+    fn meta(&self) -> &[u8] {
+        self.block_iter.meta()
+    }
+
     fn key(&self) -> &[u8] {
         self.block_iter.key()
     }
@@ -170,6 +169,10 @@ impl VSsTableIterator {
 }
 
 impl StorageIterator for VSsTableIterator {
+    fn meta(&self) -> &[u8] {
+        self.iter.meta()
+    }
+
     fn key(&self) -> &[u8] {
         self.iter.key()
     }
